@@ -2,21 +2,45 @@ import time
 from tqdm import tqdm
 
 import torch
+import torch.distributed as dist
 from torch.cuda.amp import autocast, GradScaler
 
 from utils import AverageMeter, save_checkpoint, load_checkpoint, classification_accuracy
 
 
-def train_one_epoch(model, train_loader, optimizer, device, epoch,):
+def is_main_process():
+    """Checks if current process is rank 0 or non-distributed."""
+    return not dist.is_initialized() or dist.get_rank() == 0
 
+
+def reduce_tensor(tensor):
+    """Averages a tensor across all distributed processes."""
+    if not dist.is_initialized():
+        return tensor
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    rt /= dist.get_world_size()
+    return rt
+
+
+def train_one_epoch(model, train_loader, optimizer, device, epoch):
     model.train()
+    
+    # Safely unwrap DDP model to access custom methods like generate_caption
+    raw_model = model.module if hasattr(model, 'module') else model
+
     loss_meter = AverageMeter()
     accuracy_meter = AverageMeter()
 
-    batches = tqdm(train_loader, desc=f"Train Epoch {epoch}", leave=False,)
+    # Disable tqdm on secondary GPU processes to prevent UI glitching
+    batches = tqdm(
+        train_loader, 
+        desc=f"Train Epoch {epoch}", 
+        leave=False, 
+        disable=not is_main_process()
+    )
 
     for batch in batches:
-
         images = batch["image"].to(device)
         prompt_ids = batch["prompt_ids"].to(device)
         prompt_mask = batch["prompt_mask"].to(device)
@@ -27,32 +51,50 @@ def train_one_epoch(model, train_loader, optimizer, device, epoch,):
         loss = model(images, prompt_ids, prompt_mask, target_ids, target_mask)
         
         with torch.no_grad():
-            generated_text = model.generate_caption(images, prompt_ids, prompt_mask)
+            generated_text = raw_model.generate_caption(images, prompt_ids, prompt_mask)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        loss_meter.update(loss.item(), images.size(0))
-        batches.set_postfix(loss=f"{loss_meter.avg:.4f}")
-
+        # Compute accuracy locally
         batch_accuracy = classification_accuracy(generated_text, category)
-        accuracy_meter.update(batch_accuracy, images.size(0))
 
-    return loss_meter.avg,  accuracy_meter.avg
+        # Sync loss and accuracy across all GPUs for accurate logging
+        reduced_loss = reduce_tensor(loss.detach())
+        acc_tensor = torch.tensor(batch_accuracy, device=device)
+        reduced_acc = reduce_tensor(acc_tensor)
+
+        loss_meter.update(reduced_loss.item(), images.size(0))
+        accuracy_meter.update(reduced_acc.item(), images.size(0))
+
+        if is_main_process():
+            batches.set_postfix(
+                loss=f"{loss_meter.avg:.4f}", 
+                acc=f"{accuracy_meter.avg:.4f}"
+            )
+
+    return loss_meter.avg, accuracy_meter.avg
 
 
 @torch.no_grad()
-def validate(args, model, val_loader, device,):
-
+def validate(args, model, val_loader, device):
     model.eval()
+    
+    # Safely unwrap DDP model
+    raw_model = model.module if hasattr(model, 'module') else model
+
     loss_meter = AverageMeter()
     accuracy_meter = AverageMeter()
 
-    batches = tqdm(val_loader, desc="Validation", leave=False,)
+    batches = tqdm(
+        val_loader, 
+        desc="Validation", 
+        leave=False, 
+        disable=not is_main_process()
+    )
 
     for batch in batches:
-
         images = batch["image"].to(device)
         prompt_ids = batch["prompt_ids"].to(device)
         prompt_mask = batch["prompt_mask"].to(device)
@@ -61,12 +103,22 @@ def validate(args, model, val_loader, device,):
         category = batch["category_name"]
 
         loss = model(images, prompt_ids, prompt_mask, target_ids, target_mask)
-        generated_text = model.generate_caption(images, prompt_ids, prompt_mask)
-
-        loss_meter.update(loss.item(), images.size(0))
-        batches.set_postfix(loss=f"{loss_meter.avg:.4f}")
+        generated_text = raw_model.generate_caption(images, prompt_ids, prompt_mask)
 
         batch_accuracy = classification_accuracy(generated_text, category)
-        accuracy_meter.update(batch_accuracy, images.size(0))
+
+        # Sync loss and accuracy across all GPUs
+        reduced_loss = reduce_tensor(loss.detach())
+        acc_tensor = torch.tensor(batch_accuracy, device=device)
+        reduced_acc = reduce_tensor(acc_tensor)
+
+        loss_meter.update(reduced_loss.item(), images.size(0))
+        accuracy_meter.update(reduced_acc.item(), images.size(0))
+
+        if is_main_process():
+            batches.set_postfix(
+                loss=f"{loss_meter.avg:.4f}", 
+                acc=f"{accuracy_meter.avg:.4f}"
+            )
 
     return loss_meter.avg, accuracy_meter.avg
