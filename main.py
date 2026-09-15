@@ -30,6 +30,7 @@ def get_args_parser():
     parser.add_argument('--encoder_op_dim', default=768, type=int)
     parser.add_argument('--decoder_model', default="openai-community/gpt2-medium")
     parser.add_argument('--streeing_prompt', default="species identification and corresponding textual explanation task.")
+    parser.add_argument('--ann_dir', default='/kaggle/input/custom-ds', help='Path to custom JSON annotations')
     return parser
 
 def main(args):
@@ -46,9 +47,11 @@ def main(args):
     vision_encoder = VisionEncoder(args)
     preprocess = vision_encoder.preprocess
 
-    train_dataset = CocoFormatDataset(args, ann_file=f'{args.data_root}/annotations/cub_train_split1.json', img_prefix=f'{args.data_root}/images', preprocess=preprocess)
-    test_dataset = CocoFormatDataset(args, ann_file=f'{args.data_root}/annotations/cub_test_split1.json', img_prefix=f'{args.data_root}/images', preprocess=preprocess)
-
+    #train_dataset = CocoFormatDataset(args, ann_file=f'{args.data_root}/annotations/cub_train_split1.json', img_prefix=f'{args.data_root}/images', preprocess=preprocess)
+    #test_dataset = CocoFormatDataset(args, ann_file=f'{args.data_root}/annotations/cub_test_split1.json', img_prefix=f'{args.data_root}/images', preprocess=preprocess)
+    train_dataset = CocoFormatDataset(args, ann_file=f'{args.ann_dir}/cub_train_split1.json', img_prefix=f'{args.data_root}/images', preprocess=preprocess)
+    test_dataset = CocoFormatDataset(args, ann_file=f'{args.ann_dir}/cub_test_split1.json', img_prefix=f'{args.data_root}/images', preprocess=preprocess)
+    
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=1)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=1)
 
