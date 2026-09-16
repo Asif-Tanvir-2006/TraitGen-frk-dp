@@ -106,7 +106,7 @@ def main(args):
                 # val_loss, val_acc = validate(args, model, test_loader, device)
                 checkpoint_path = os.path.join(args.output_dir, "best_model.pth")
                 # Save model.module to strip the 'module.' wrapper prefix
-                save_checkpoint(checkpoint_path, model.module, optimizer, epoch)
+                save_checkpoint(checkpoint_path, model.module, optimizer,None,epoch)
 
     cleanup_ddp()
 
