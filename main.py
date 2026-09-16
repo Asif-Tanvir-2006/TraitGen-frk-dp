@@ -86,7 +86,7 @@ def main(args):
 
     # Initialize model and wrap in DDP
     model = TraitGen(args, vision_encoder=vision_encoder).to(device)
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr
