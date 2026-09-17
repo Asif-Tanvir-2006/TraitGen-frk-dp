@@ -50,15 +50,15 @@ def train_one_epoch(model, train_loader, optimizer, device, epoch):
 
         loss = model(images, prompt_ids, prompt_mask, target_ids, target_mask)
         
-        with torch.no_grad():
-            generated_text = raw_model.generate_caption(images, prompt_ids, prompt_mask)
+        #with torch.no_grad():
+        #    generated_text = raw_model.generate_caption(images, prompt_ids, prompt_mask)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         # Compute accuracy locally
-        batch_accuracy = classification_accuracy(generated_text, category)
+        #batch_accuracy = classification_accuracy(generated_text, category)
 
         # Sync loss and accuracy across all GPUs for accurate logging
         reduced_loss = reduce_tensor(loss.detach())
@@ -66,7 +66,7 @@ def train_one_epoch(model, train_loader, optimizer, device, epoch):
         reduced_acc = reduce_tensor(acc_tensor)
 
         loss_meter.update(reduced_loss.item(), images.size(0))
-        accuracy_meter.update(reduced_acc.item(), images.size(0))
+        #accuracy_meter.update(reduced_acc.item(), images.size(0))
 
         if is_main_process():
             batches.set_postfix(
@@ -74,7 +74,7 @@ def train_one_epoch(model, train_loader, optimizer, device, epoch):
                 acc=f"{accuracy_meter.avg:.4f}"
             )
 
-    return loss_meter.avg, accuracy_meter.avg
+    return loss_meter.avg
 
 
 @torch.no_grad()
