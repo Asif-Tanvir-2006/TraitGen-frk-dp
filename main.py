@@ -100,7 +100,7 @@ def main(args):
 
         # Log and save checkpoints only from rank 0
         if global_rank == 0:
-            logger.info(f"Epoch {epoch}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, ")
+            logger.info(f"Epoch {epoch}: Train Loss={train_loss:.4f}")
 
             if epoch == args.epochs - 1:
                 # val_loss, val_acc = validate(args, model, test_loader, device)
