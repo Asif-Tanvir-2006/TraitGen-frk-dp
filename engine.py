@@ -62,8 +62,8 @@ def train_one_epoch(model, train_loader, optimizer, device, epoch):
 
         # Sync loss and accuracy across all GPUs for accurate logging
         reduced_loss = reduce_tensor(loss.detach())
-        acc_tensor = torch.tensor(batch_accuracy, device=device)
-        reduced_acc = reduce_tensor(acc_tensor)
+        #acc_tensor = torch.tensor(batch_accuracy, device=device)
+        #reduced_acc = reduce_tensor(acc_tensor)
 
         loss_meter.update(reduced_loss.item(), images.size(0))
         #accuracy_meter.update(reduced_acc.item(), images.size(0))
