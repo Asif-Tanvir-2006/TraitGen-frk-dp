@@ -30,7 +30,7 @@ def train_one_epoch(model, train_loader, optimizer, device, epoch):
     raw_model = model.module if hasattr(model, 'module') else model
 
     loss_meter = AverageMeter()
-    accuracy_meter = AverageMeter()
+    #accuracy_meter = AverageMeter()
 
     # Disable tqdm on secondary GPU processes to prevent UI glitching
     batches = tqdm(
