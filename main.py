@@ -96,7 +96,7 @@ def main(args):
         # Set epoch for sampler to ensure proper shuffling across GPUs
         train_sampler.set_epoch(epoch)
 
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, device, epoch)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, epoch)
 
         # Log and save checkpoints only from rank 0
         if global_rank == 0:
