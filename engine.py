@@ -70,8 +70,7 @@ def train_one_epoch(model, train_loader, optimizer, device, epoch):
 
         if is_main_process():
             batches.set_postfix(
-                loss=f"{loss_meter.avg:.4f}", 
-                acc=f"{accuracy_meter.avg:.4f}"
+                loss=f"{loss_meter.avg:.4f}"
             )
 
     return loss_meter.avg
