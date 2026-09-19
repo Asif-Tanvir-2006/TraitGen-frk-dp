@@ -87,7 +87,7 @@ def main(args):
         pin_memory=True
     )
     
-    if(args.validate_model == 0):
+    if(args.validate_model == 1):
         model_state_path = args.load_path
         if not (model_state_path == "scratch"):
         
