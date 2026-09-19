@@ -115,6 +115,8 @@ def main(args):
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr
         )    
+
+        cnter = 0
         for epoch in range(start_epoch,start_epoch + args.epochs):
             # Set epoch for sampler to ensure proper shuffling across GPUs
             train_sampler.set_epoch(epoch)
@@ -130,6 +132,12 @@ def main(args):
                     checkpoint_path = os.path.join(args.output_dir, "best_model.pth")
                     # Save model.module to strip the 'module.' wrapper prefix
                     save_checkpoint(checkpoint_path, model.module, optimizer,None,epoch)
+                elif cnter % 5 == 0:
+                    checkpoint_path = os.path.join(args.output_dir, f"best_model_{cnter}.pth")
+                    # Save model.module to strip the 'module.' wrapper prefix
+                    save_checkpoint(checkpoint_path, model.module, optimizer,None,epoch)
+                    
+            cnter += 1
 
     cleanup_ddp()
 
