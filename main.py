@@ -116,7 +116,7 @@ def main(args):
             filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr
         )    
 
-        cnter = 0
+        cnter = 1
         for epoch in range(start_epoch,start_epoch + args.epochs):
             # Set epoch for sampler to ensure proper shuffling across GPUs
             train_sampler.set_epoch(epoch)
