@@ -43,6 +43,8 @@ def get_args_parser():
     parser.add_argument('--decoder_model', default="openai-community/gpt2-medium")
     parser.add_argument('--streeing_prompt', default="species identification and corresponding textual explanation task.")
     parser.add_argument('--ann_dir', default='/kaggle/input/custom-ds', help='Path to custom JSON annotations')
+    parser.add_argument('--validate_model',default=0,type=int)
+    parser.add_argument('--load_path',default="scratch")
     return parser
 
 def main(args):
@@ -76,6 +78,7 @@ def main(args):
         num_workers=2,
         pin_memory=True
     )
+
     test_loader = DataLoader(
         test_dataset, 
         batch_size=args.batch_size, 
@@ -83,30 +86,50 @@ def main(args):
         num_workers=2,
         pin_memory=True
     )
+    
+    if(args.validate_model == 0):
+        model_state_path = args.load_path
+        if not (model_state_path == "scratch"):
+        
+            model_test = TraitGen(args, vision_encoder=vision_encoder).to(device)
+            ckpt_info = load_checkpoint(model_state_path,model_test,None,None)
+            model_test = DDP(model_test,device_ids=[local_rank],output_device=local_rank,find_unused_parameters=False)
+            val_loss,val_acc = validate(args,model_test,test_loader,device)
+            if global_rank == 0:
+                logger.info(f"Epoch {ckpt_info}: Accuracy={val_acc:.4f}")
+        else:
+            print("ERROR. NO PATH MENTIONED FOR LOADING")
+        
+    else:
+        # Initialize model and wrap in DDP
+        model = TraitGen(args, vision_encoder=vision_encoder).to(device)
+        model_state_path = args.load_path
+        
+        start_epoch = 0
+        
+        if not (model_state_path == "scratch"):
+            start_epoch = load_checkpoint(model_state_path,model,None,None)
+            start_epoch += 1
+        
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+        optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr
+        )    
+        for epoch in range(start_epoch,start_epoch + args.epochs):
+            # Set epoch for sampler to ensure proper shuffling across GPUs
+            train_sampler.set_epoch(epoch)
 
-    # Initialize model and wrap in DDP
-    model = TraitGen(args, vision_encoder=vision_encoder).to(device)
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+            train_loss = train_one_epoch(model, train_loader, optimizer, device, epoch)
 
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr
-    )
+            # Log and save checkpoints only from rank 0
+            if global_rank == 0:
+                logger.info(f"Epoch {epoch}: Train Loss={train_loss:.4f}")
 
-    for epoch in range(args.epochs):
-        # Set epoch for sampler to ensure proper shuffling across GPUs
-        train_sampler.set_epoch(epoch)
-
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, epoch)
-
-        # Log and save checkpoints only from rank 0
-        if global_rank == 0:
-            logger.info(f"Epoch {epoch}: Train Loss={train_loss:.4f}")
-
-            if epoch == args.epochs - 1:
-                # val_loss, val_acc = validate(args, model, test_loader, device)
-                checkpoint_path = os.path.join(args.output_dir, "best_model.pth")
-                # Save model.module to strip the 'module.' wrapper prefix
-                save_checkpoint(checkpoint_path, model.module, optimizer,None,epoch)
+                if epoch == start_epoch + args.epochs - 1:
+                    # val_loss, val_acc = validate(args, model, test_loader, device)
+                    checkpoint_path = os.path.join(args.output_dir, "best_model.pth")
+                    # Save model.module to strip the 'module.' wrapper prefix
+                    save_checkpoint(checkpoint_path, model.module, optimizer,None,epoch)
 
     cleanup_ddp()
 

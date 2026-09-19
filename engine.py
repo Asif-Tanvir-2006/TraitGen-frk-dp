@@ -28,7 +28,8 @@ def train_one_epoch(model, train_loader, optimizer, device, epoch):
     
     # Safely unwrap DDP model to access custom methods like generate_caption
     raw_model = model.module if hasattr(model, 'module') else model
-
+    raw_model.vision_encoder.eval()
+    
     loss_meter = AverageMeter()
     #accuracy_meter = AverageMeter()
 
