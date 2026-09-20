@@ -46,6 +46,8 @@ def main(args):
     
     model = TraitGen(args, vision_encoder=vision_encoder).to(device)
     model_state_path = args.load_path
+    
+    model.eval()
             
             
     if not (model_state_path == "scratch"):
@@ -59,9 +61,9 @@ def main(args):
         infer_image = infer_image.unsqueeze(0).to(device)
         
         prompt_enc = model.decoder.tokenizer(args.streeing_prompt,return_tensors="pt")
-        prompt_ids = prompt_enc.input_ids.squeeze(0)
-        prompt_mask = prompt_enc.attention_mask.squeeze(0)
-        
+        prompt_ids = prompt_enc.input_ids.to(device)
+        prompt_mask = prompt_enc.attention_mask.to(device)
+
         generated_text = model.generate_caption(infer_image,prompt_ids=prompt_ids,prompt_mask=prompt_mask)
         print(generated_text)
     else:
