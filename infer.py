@@ -56,6 +56,7 @@ def main(args):
     if not image_path == 'scratch':
         infer_image = Image.open(image_path)
         infer_image = preprocess(infer_image)
+        infer_image = infer_image.unsqueeze(0)
         
         prompt_enc = model.decoder.tokenizer(args.streeing_prompt,return_tensors="pt")
         prompt_ids = prompt_enc.input_ids.squeeze(0)
