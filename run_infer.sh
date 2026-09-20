@@ -1,0 +1,1 @@
+python infer.py --input_image '../test_img_1_Blasian_albatross.jpg' --load_path '../best_model_14.pth'
