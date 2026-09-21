@@ -96,7 +96,7 @@ def main(args):
             model_test = DDP(model_test,device_ids=[local_rank],output_device=local_rank,find_unused_parameters=False)
             val_loss,val_acc = validate(args,model_test,test_loader,device)
             if global_rank == 0:
-                logger.info(f"Epoch {ckpt_info}: Accuracy={val_acc:.4f}")
+                logger.info(f"Epoch {ckpt_info}: Accuracy={val_acc:.4f} Validation Loss={val_loss:.4f}")
         else:
             print("ERROR. NO PATH MENTIONED FOR LOADING")
         
