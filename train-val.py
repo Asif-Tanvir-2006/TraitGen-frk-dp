@@ -137,11 +137,10 @@ def main(args):
                     # Save model.module to strip the 'module.' wrapper prefix
                     save_checkpoint(checkpoint_path, model.module, optimizer,None,epoch)
 
-                if cnter % 2 == 0:
-                    val_loss,val_acc = validate(args,model,test_loader,device)
-                    if global_rank == 0:
-                        logger.info(f"Epoch {ckpt_info}: Accuracy={val_acc:.4f} Validation Loss={val_loss:.4f}")
-                    
+            if cnter % 2 == 0:
+                val_loss,val_acc = validate(args,model,test_loader,device)
+                if global_rank == 0:
+                    logger.info(f"Epoch {epoch}: Accuracy={val_acc:.4f} Validation Loss={val_loss:.4f}")
             cnter += 1
 
     cleanup_ddp()
