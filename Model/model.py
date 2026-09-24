@@ -565,7 +565,7 @@ class TraitGen(nn.Module):
 
 
     @torch.no_grad()
-    def visualize_trait_attention(self, image, trait_text, save_path="./attention_map.png",
+    def visualize_trait_attention_older(self, image, trait_text, save_path="./attention_map.png",
                                 baseline_text="a photo"):
         """
         Extracts GPT-2's internal cross-attention over image patches for a specific
@@ -643,7 +643,290 @@ class TraitGen(nn.Module):
         plt.close(fig)
 
         print(f"[SUCCESS] Contrastive attention map saved to: {save_path}")
+    @torch.no_grad()
+    def visualize_trait_attention(self, image, trait_text, save_path="./attention_map.png",
+                                baseline_text="species identification and corresponding textual explanation task.", sink_patches=(0,)):
+        """
+        Contrastive attention map with:
+        - baseline text length-matched to trait text (removes length-driven
+            sink-magnitude confound)
+        - known sink patch indices excluded from the map entirely
+        """
+        self.eval()
+        device = image.device
 
+        image_features = self.vision_encoder(image)
+        if image_features.dim() == 3 and image_features.size(1) == self.args.encoder_op_dim:
+            image_features = image_features.permute(0, 2, 1)
+        prefix_embeds = self.bridge(image_features)
+        num_patches = prefix_embeds.size(1)
+
+        tokenizer = self.decoder.tokenizer
+
+        # --- length-match baseline to trait ---
+        trait_ids = tokenizer(trait_text, return_tensors="pt").input_ids
+        trait_len = trait_ids.size(1)
+        base_ids = tokenizer(baseline_text, return_tensors="pt").input_ids
+        if base_ids.size(1) < trait_len:
+            pad_id = tokenizer.eos_token_id
+            pad = torch.full((1, trait_len - base_ids.size(1)), pad_id, dtype=torch.long)
+            base_ids = torch.cat([base_ids, pad], dim=1)
+        elif base_ids.size(1) > trait_len:
+            base_ids = base_ids[:, :trait_len]
+        baseline_text_matched = tokenizer.decode(base_ids[0])
+
+        trait_attn = self._get_patch_attention(prefix_embeds, trait_text, device)
+        baseline_attn = self._get_patch_attention(prefix_embeds, baseline_text_matched, device)
+
+        diff_attn = trait_attn - baseline_attn
+
+        # --- exclude known sink patches before any normalization ---
+        valid_mask = torch.ones(num_patches, dtype=torch.bool, device=diff_attn.device)
+        for idx in sink_patches:
+            valid_mask[idx] = False
+        diff_attn = diff_attn.clone()
+        diff_attn[~valid_mask] = diff_attn[valid_mask].mean()  # neutralize, don't zero (avoids fake "cold" spot)
+
+        diff_attn = F.relu(diff_attn)
+
+        grid_size = int(round(num_patches ** 0.5))
+        if grid_size * grid_size != num_patches:
+            raise ValueError(f"num_patches ({num_patches}) is not a perfect square.")
+        attn_grid = diff_attn.view(grid_size, grid_size)
+
+        mean_attn = attn_grid.mean()
+        std_attn = attn_grid.std() + 1e-8
+        attn_grid = F.relu((attn_grid - mean_attn) / std_attn)
+
+        B, C, H, W = image.shape
+        heatmap_resized = F.interpolate(
+            attn_grid.unsqueeze(0).unsqueeze(0), size=(H, W), mode='bilinear', align_corners=False
+        ).squeeze().cpu().numpy()
+        if heatmap_resized.max() > 0:
+            heatmap_resized = heatmap_resized / heatmap_resized.max()
+
+        img_tensor = image[0].cpu().detach()
+        img_tensor = (img_tensor - img_tensor.min()) / (img_tensor.max() - img_tensor.min() + 1e-8)
+        img_np = img_tensor.permute(1, 2, 0).numpy()
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img_np)
+        overlay = ax.imshow(heatmap_resized, cmap='jet', alpha=0.60)
+        plt.title(f"GPT-2 Cross-Attention (contrastive, sink-masked) for Trait:\n'{trait_text}'", fontsize=10, pad=10)
+        plt.axis('off')
+        fig.colorbar(overlay, ax=ax, fraction=0.046, pad=0.04)
+
+        os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.close(fig)
+        print(f"[SUCCESS] Sink-masked attention map saved to: {save_path}")
+        
+    def visualize_trait_attribution(self, image, trait_text, save_path="./attribution_map.png"):
+        """
+        Gradient-based attribution: measures how much each image patch actually
+        influenced GPT-2's probability of generating trait_text, rather than
+        how much attention weight it received (which is a weaker, indirect proxy).
+        """
+        self.eval()
+        device = image.device
+
+        # 1. Vision features -> Bridge. Keep grad this time.
+        image_features = self.vision_encoder(image)
+        if image_features.dim() == 3 and image_features.size(1) == self.args.encoder_op_dim:
+            image_features = image_features.permute(0, 2, 1)
+
+        prefix_embeds = self.bridge(image_features)  # (1, num_patches, hidden_dim)
+        prefix_embeds.retain_grad()
+        prefix_embeds.requires_grad_(True)
+
+        # 2. Tokenize the trait text
+        tokenizer = self.decoder.tokenizer
+        target_ids = tokenizer(trait_text, return_tensors="pt").input_ids.to(device)
+
+        prompt_ids = torch.empty((1, 0), dtype=torch.long, device=device)
+        prompt_embeds = self.decoder.gpt2.get_input_embeddings()(prompt_ids)
+        target_embeds = self.decoder.gpt2.get_input_embeddings()(target_ids)
+
+        inputs_embeds = torch.cat([prompt_embeds, prefix_embeds, target_embeds], dim=1)
+
+        prefix_len = prefix_embeds.size(1)
+        target_len = target_ids.size(1)
+        attention_mask = torch.ones((1, prefix_len + target_len), device=device, dtype=torch.long)
+
+        # 3. Forward pass, get logits
+        outputs = self.decoder.gpt2(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+        logits = outputs.logits  # (1, seq_len, vocab_size)
+
+        # 4. For each target token, get the log-prob GPT-2 assigned to the CORRECT
+        # next token, at the position right before it. Sum them — this is the
+        # total log-likelihood GPT-2 gave to generating "trait_text" from the prefix.
+        # Position of the first target token's prediction is prefix_len - 1 (0-indexed).
+        log_probs = F.log_softmax(logits, dim=-1)
+        total_log_prob = 0.0
+        for t in range(target_len):
+            pred_pos = prefix_len - 1 + t
+            token_id = target_ids[0, t]
+            total_log_prob = total_log_prob + log_probs[0, pred_pos, token_id]
+
+        # 5. Backprop to get gradient of that log-prob w.r.t. each patch embedding
+        self.decoder.gpt2.zero_grad()
+        total_log_prob.backward()
+
+        grad = prefix_embeds.grad[0]  # (num_patches, hidden_dim)
+
+        # 6. Gradient x Input (a standard, sharper attribution than raw gradient norm)
+        attribution = (grad * prefix_embeds[0].detach()).sum(dim=-1)  # (num_patches,)
+        attribution = attribution.detach()
+
+        # Center + suppress negative-influence patches (or keep them if you want
+        # to see what pushed AWAY from this word — see note below)
+        attribution = F.relu(attribution)
+
+        num_patches = prefix_embeds.size(1)
+        grid_size = int(round(num_patches ** 0.5))
+        if grid_size * grid_size != num_patches:
+            raise ValueError(f"num_patches ({num_patches}) is not a perfect square.")
+        attr_grid = attribution.view(grid_size, grid_size)
+
+        mean_a, std_a = attr_grid.mean(), attr_grid.std() + 1e-8
+        attr_grid = F.relu((attr_grid - mean_a) / std_a)
+
+        B, C, H, W = image.shape
+        heatmap_resized = F.interpolate(
+            attr_grid.unsqueeze(0).unsqueeze(0), size=(H, W), mode='bilinear', align_corners=False
+        ).squeeze().cpu().numpy()
+        if heatmap_resized.max() > 0:
+            heatmap_resized = heatmap_resized / heatmap_resized.max()
+
+        img_tensor = image[0].cpu().detach()
+        img_tensor = (img_tensor - img_tensor.min()) / (img_tensor.max() - img_tensor.min() + 1e-8)
+        img_np = img_tensor.permute(1, 2, 0).numpy()
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img_np)
+        overlay = ax.imshow(heatmap_resized, cmap='jet', alpha=0.60)
+        plt.title(f"Patch Attribution (Grad×Input) for Trait:\n'{trait_text}'", fontsize=11, pad=10)
+        plt.axis('off')
+        fig.colorbar(overlay, ax=ax, fraction=0.046, pad=0.04)
+
+        os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.close(fig)
+        print(f"[SUCCESS] Attribution map saved to: {save_path}")
+    def visualize_trait_integrated_gradients(self, image, trait_text, save_path="./ig_attribution_map.png",
+                                            steps=20, baseline_mode="mean"):
+        """
+        Integrated Gradients attribution map: measures each patch's contribution
+        to GPT-2's log-probability of generating trait_text, integrated along a
+        path from a baseline (blank) patch embedding to the actual one. More
+        robust to texture/edge-driven noise than single-point Grad x Input.
+        """
+        self.eval()
+        device = image.device
+
+        # 1. Vision features -> Bridge (no grad needed here, we build interp separately)
+        image_features = self.vision_encoder(image)
+        if image_features.dim() == 3 and image_features.size(1) == self.args.encoder_op_dim:
+            image_features = image_features.permute(0, 2, 1)
+        prefix_embeds = self.bridge(image_features).detach()  # (1, num_patches, hidden_dim)
+        num_patches = prefix_embeds.size(1)
+
+        # 2. Baseline prefix embedding to integrate FROM.
+        # "zero": a blank/uninformative reference (standard IG choice).
+        # "mean": each patch replaced by the mean of all patches (a "flat, generic
+        #         patch" reference) -- sometimes less biased toward the model's
+        #         behavior on literally-zero inputs, which it may never see in training.
+        if baseline_mode == "zero":
+            baseline_prefix = torch.zeros_like(prefix_embeds)
+        elif baseline_mode == "mean":
+            baseline_prefix = prefix_embeds.mean(dim=1, keepdim=True).expand_as(prefix_embeds)
+        else:
+            raise ValueError(f"Unknown baseline_mode: {baseline_mode}")
+
+        # 3. Tokenize the trait
+        tokenizer = self.decoder.tokenizer
+        target_ids = tokenizer(trait_text, return_tensors="pt").input_ids.to(device)
+        target_len = target_ids.size(1)
+
+        prompt_ids = torch.empty((1, 0), dtype=torch.long, device=device)
+        prompt_embeds = self.decoder.gpt2.get_input_embeddings()(prompt_ids)
+        target_embeds = self.decoder.gpt2.get_input_embeddings()(target_ids)
+
+        # 4. Integrate gradients along the path baseline -> prefix_embeds
+        total_grad = torch.zeros_like(prefix_embeds)
+        alphas = torch.linspace(0.0, 1.0, steps, device=device)
+
+        for alpha in alphas:
+            interp = baseline_prefix + alpha * (prefix_embeds - baseline_prefix)
+            interp = interp.clone().requires_grad_(True)
+
+            inputs_embeds = torch.cat([prompt_embeds, interp, target_embeds], dim=1)
+            prefix_len = interp.size(1)
+            attention_mask = torch.ones((1, prefix_len + target_len), device=device, dtype=torch.long)
+
+            outputs = self.decoder.gpt2(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+            log_probs = F.log_softmax(outputs.logits, dim=-1)
+
+            total_log_prob = 0.0
+            for t in range(target_len):
+                pred_pos = prefix_len - 1 + t
+                total_log_prob = total_log_prob + log_probs[0, pred_pos, target_ids[0, t]]
+
+            self.decoder.gpt2.zero_grad()
+            grad = torch.autograd.grad(total_log_prob, interp, retain_graph=False)[0]
+            total_grad = total_grad + grad.detach()
+
+        avg_grad = total_grad / steps
+
+        # 5. IG attribution = (prefix - baseline) * avg_grad, summed over hidden dim
+        attribution = ((prefix_embeds - baseline_prefix) * avg_grad).sum(dim=-1)[0]  # (num_patches,)
+        attribution = F.relu(attribution)  # keep only patches that pushed TOWARD the trait word
+
+        # 6. Reshape to square grid
+        grid_size = int(round(num_patches ** 0.5))
+        if grid_size * grid_size != num_patches:
+            raise ValueError(
+                f"num_patches ({num_patches}) is not a perfect square; "
+                f"cannot reshape into a square attribution grid."
+            )
+        attr_grid = attribution.view(grid_size, grid_size)
+
+        # Z-score + ReLU for contrast (consistent with your other visualization fns)
+        mean_a = attr_grid.mean()
+        std_a = attr_grid.std() + 1e-8
+        attr_grid = F.relu((attr_grid - mean_a) / std_a)
+
+        # 7. Upsample to image resolution
+        B, C, H, W = image.shape
+        heatmap_resized = F.interpolate(
+            attr_grid.unsqueeze(0).unsqueeze(0),
+            size=(H, W),
+            mode='bilinear',
+            align_corners=False
+        ).squeeze().cpu().numpy()
+
+        if heatmap_resized.max() > 0:
+            heatmap_resized = heatmap_resized / heatmap_resized.max()
+
+        # 8. Plot original image + attribution overlay
+        img_tensor = image[0].cpu().detach()
+        img_tensor = (img_tensor - img_tensor.min()) / (img_tensor.max() - img_tensor.min() + 1e-8)
+        img_np = img_tensor.permute(1, 2, 0).numpy()
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img_np)
+        overlay = ax.imshow(heatmap_resized, cmap='jet', alpha=0.60)
+
+        plt.title(f"Integrated Gradients ({steps} steps, baseline='{baseline_mode}')\nfor Trait: '{trait_text}'",
+                fontsize=11, pad=10)
+        plt.axis('off')
+        fig.colorbar(overlay, ax=ax, fraction=0.046, pad=0.04)
+
+        os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.close(fig)
+
+        print(f"[SUCCESS] Integrated Gradients map saved to: {save_path}")
 class Bridge(nn.Module):
 
     def __init__(self, vision_dim: int, hidden_dim: int):

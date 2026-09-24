@@ -76,7 +76,7 @@ def main(args):
             prompt_list.append(str(input()))
         
         for i in prompt_list:
-            _ = model.visualize_trait_attention(infer_image,i,f"attention_map_{i}.png")
+            _ = model.visualize_trait_integrated_gradients(infer_image,i,f"attention_map_{i}.png")
     else:
         print("ERROR - Image path not specified")
     
