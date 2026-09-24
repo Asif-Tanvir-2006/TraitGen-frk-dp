@@ -334,7 +334,7 @@ class TraitGen(nn.Module):
 
         return output_dict
     @torch.no_grad()
-    def generate_image_patches(self, image, prompt_list,base_output_path="./similarity_analysis"):
+    def generate_image_patches(self, image, prompt_list,device="cuda",base_output_path="./similarity_analysis"):
         """
         Supports complex multi-word prompts by using GPT-2's contextualized 
         transformer representations rather than static mean-pooled input embeddings.
