@@ -267,7 +267,7 @@ class TraitGen(nn.Module):
         return generated_text
     
     @torch.no_grad()
-    def generate_image_patches(self,image,prompt_list,device="cuda",base_output_path="./similarity_analysis"):
+    def generate_image_patches_old(self,image,prompt_list,device="cuda",base_output_path="./similarity_analysis"):
         image_features = self.vision_encoder(image).permute(0, 2, 1)
         prefix_embeds = self.bridge(image_features)
         
@@ -332,6 +332,74 @@ class TraitGen(nn.Module):
             # It handles all interpolation, color-mapping, blending, and saving.
             visualize_and_save_similarity_heatmap(image, specific_prompt_sim_matrix, current_prompt_string, full_save_path)
 
+        return output_dict
+    @torch.no_grad()
+    def generate_image_patches(self, image, prompt_list,base_output_path="./similarity_analysis"):
+        """
+        Supports complex multi-word prompts by using GPT-2's contextualized 
+        transformer representations rather than static mean-pooled input embeddings.
+        """
+        device = image.device
+
+        # 1. Vision Features -> Bridge
+        image_features = self.vision_encoder(image).permute(0, 2, 1) # (B, num_patches, vision_dim)
+        prefix_embeds = self.bridge(image_features)                  # (B, num_patches, hidden_dim)
+
+        # 2. Tokenize Prompts
+        tokenized_inputs = self.decoder.tokenizer(
+            prompt_list, 
+            padding=True, 
+            return_tensors="pt"
+        ).to(device)
+
+        input_ids = tokenized_inputs.input_ids
+        attention_mask = tokenized_inputs.attention_mask
+
+        # ----------------------------------------------------------------------
+        # FIX FOR MULTI-WORD PROMPTS: Contextual Transformer Pass
+        # Pass input IDs through GPT-2's trunk to get fully contextualized tokens
+        # ----------------------------------------------------------------------
+        gpt2_outputs = self.decoder.gpt2.transformer(
+            input_ids=input_ids,
+            attention_mask=attention_mask
+        )
+        hidden_states = gpt2_outputs.last_hidden_state  # (num_prompts, seq_len, hidden_dim)
+
+        # Extract the LAST non-padded token position for each prompt in the batch
+        # (This vector contains the causal summary of the entire multi-word phrase)
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_indices = torch.arange(input_ids.size(0), device=device)
+        text_embeds = hidden_states[batch_indices, sequence_lengths] # (num_prompts, hidden_dim)
+
+        # 3. Normalized Cosine Similarity
+        prefix_embeds_norm = F.normalize(prefix_embeds, p=2, dim=-1) # (B, num_patches, hidden_dim)
+        text_embeds_norm = F.normalize(text_embeds, p=2, dim=-1)     # (num_prompts, hidden_dim)
+
+        # Similarity matrix: (B, num_prompts, num_patches)
+        similarity_matrix = torch.matmul(text_embeds_norm, prefix_embeds_norm.transpose(-1, -2))
+
+        output_dict = {
+            "patch_embeddings": prefix_embeds,
+            "similarity_matrix": similarity_matrix
+        }
+        
+        if not os.path.exists(base_output_path):
+                    os.makedirs(base_output_path)
+        
+        # Iterate through all prompts and generate a visualization for each one
+        # Note: original_image_tensor must retain its full spatial dimension (B, C, H, W)
+        for p_idx, current_prompt_string in enumerate(prompt_list):
+            # Slice the similarity matrix to isolate the matrix for just this prompt: (B, 1, num_patches)
+            specific_prompt_sim_matrix = similarity_matrix[:, p_idx:p_idx+1, :]
+                    
+            # Ensure filenames are safe for saving (sanitize/remove spaces if needed)
+            filename_prompt = current_prompt_string.replace(' ', '_').replace('"', '')[:30] # Limit filename length
+            full_save_path = os.path.join(base_output_path, f"vis_sim_matrix_P{p_idx}_{filename_prompt}.jpg")
+        
+            # CALL THE STANDALONE VISUALIZATION FUNCTION from Part 1
+            # It handles all interpolation, color-mapping, blending, and saving.
+            visualize_and_save_similarity_heatmap(image, specific_prompt_sim_matrix, current_prompt_string, full_save_path)
+        
         return output_dict
         
 
