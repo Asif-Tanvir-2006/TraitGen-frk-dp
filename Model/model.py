@@ -8,7 +8,6 @@ from Model.TextDecoder import GPT2Decoder
 import os
 
 
-import numpy as np
 import matplotlib.pyplot as plt
 
 def visualize_and_save_similarity_heatmap(original_image_tensor, similarity_matrix, prompt_string, save_path):
