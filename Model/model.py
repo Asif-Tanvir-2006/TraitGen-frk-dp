@@ -431,26 +431,38 @@ class TraitGen(nn.Module):
         )
 
         # 4. Pass through GPT-2 requesting raw attention outputs
-        outputs = self.decoder.gpt2(
+        # 4. Pass through GPT-2 requesting raw attention outputs directly from the trunk
+        # If self.decoder.gpt2 is a GPT2LMHeadModel, we target its base transformer module:
+        gpt2_base = getattr(self.decoder.gpt2, "transformer", self.decoder.gpt2)
+
+        outputs = gpt2_base(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             output_attentions=True,
             return_dict=True
         )
 
+        if outputs.attentions is None:
+            raise ValueError(
+                "GPT-2 returned None for attentions. Ensure the model config allows output_attentions=True."
+            )
+
         # outputs.attentions is a tuple of shape: (num_layers, batch_size, num_heads, seq_len, seq_len)
         num_patches = prefix_embeds.size(1)
-        seq_len = inputs_embeds.size(1)
         text_len = target_ids.size(1)
 
-        # Aggregate attention across all layers and heads (or use last layer)
-        # Shape: (num_layers, num_heads, seq_len, seq_len)
+        # Stack layers into tensor: shape (num_layers, batch_size, num_heads, seq_len, seq_len)
+        # Squeeze batch dimension (index 1 since batch_size=1)
         all_attentions = torch.stack(outputs.attentions).squeeze(1) 
 
-        # We want attention from text tokens (the last `text_len` tokens) TO patch tokens (the first `num_patches` tokens)
-        # Average across all layers and heads:
+        # Extract attention weights flowing FROM text tokens TO patch tokens
+        # Average across all layers and attention heads
         patch_attention = all_attentions[:, :, -text_len:, :num_patches].mean(dim=(0, 1, 2)) # (num_patches,)
+        """
+        end
+        """
 
+        
         # 5. Reshape and normalize 2D grid
         grid_size = int(num_patches ** 0.5)
         attn_grid = patch_attention.view(grid_size, grid_size)
