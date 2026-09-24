@@ -74,7 +74,9 @@ def main(args):
         
         for i in range(n):
             prompt_list.append(str(input()))
-        _ = model.generate_image_patches(infer_image,prompt_list,device)
+        
+        for i in prompt_list:
+            _ = model.visualize_trait_attention(infer_image,i,f"attention_map_{i}.png")
     else:
         print("ERROR - Image path not specified")
     

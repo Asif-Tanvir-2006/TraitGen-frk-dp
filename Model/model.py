@@ -401,7 +401,88 @@ class TraitGen(nn.Module):
             visualize_and_save_similarity_heatmap(image, specific_prompt_sim_matrix, current_prompt_string, full_save_path)
         
         return output_dict
+    @torch.no_grad()
+    def visualize_trait_attention(self, image, trait_text, save_path="./attention_map.png"):
+        """
+        Extracts GPT-2's RAW internal cross-attention weights over the image patches
+        for a specific generated trait.
+        """
+        self.eval()
+        device = image.device
+
+        # 1. Forward Vision Encoder & Bridge
+        image_features = self.vision_encoder(image)
+        if image_features.dim() == 3 and image_features.size(1) == self.args.encoder_op_dim:
+            image_features = image_features.permute(0, 2, 1)
+
+        prefix_embeds = self.bridge(image_features) # (1, num_patches, hidden_dim)
+
+        # 2. Tokenize the trait
+        tokenizer = self.decoder.tokenizer
+        target_ids = tokenizer(trait_text, return_tensors="pt").input_ids.to(device)
+        target_mask = torch.ones_like(target_ids)
+
+        prompt_ids = torch.empty((1, 0), dtype=torch.long, device=device)
+        prompt_mask = torch.empty((1, 0), dtype=torch.long, device=device)
+
+        # 3. Prepare inputs for GPT-2
+        inputs_embeds, attention_mask, _ = self.input2decoder(
+            prompt_ids, prompt_mask, prefix_embeds, target_ids, target_mask
+        )
+
+        # 4. Pass through GPT-2 requesting raw attention outputs
+        outputs = self.decoder.gpt2(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            output_attentions=True,
+            return_dict=True
+        )
+
+        # outputs.attentions is a tuple of shape: (num_layers, batch_size, num_heads, seq_len, seq_len)
+        num_patches = prefix_embeds.size(1)
+        seq_len = inputs_embeds.size(1)
+        text_len = target_ids.size(1)
+
+        # Aggregate attention across all layers and heads (or use last layer)
+        # Shape: (num_layers, num_heads, seq_len, seq_len)
+        all_attentions = torch.stack(outputs.attentions).squeeze(1) 
+
+        # We want attention from text tokens (the last `text_len` tokens) TO patch tokens (the first `num_patches` tokens)
+        # Average across all layers and heads:
+        patch_attention = all_attentions[:, :, -text_len:, :num_patches].mean(dim=(0, 1, 2)) # (num_patches,)
+
+        # 5. Reshape and normalize 2D grid
+        grid_size = int(num_patches ** 0.5)
+        attn_grid = patch_attention.view(grid_size, grid_size)
+        attn_grid = (attn_grid - attn_grid.min()) / (attn_grid.max() - attn_grid.min() + 1e-8)
+
+        # 6. Resize to original image dimensions
+        B, C, H, W = image.shape
+        heatmap_resized = F.interpolate(
+            attn_grid.unsqueeze(0).unsqueeze(0),
+            size=(H, W),
+            mode='bilinear',
+            align_corners=False
+        ).squeeze().cpu().numpy()
+
+        # 7. Plot original image + Attention overlay
+        img_tensor = image[0].cpu().detach()
+        img_tensor = (img_tensor - img_tensor.min()) / (img_tensor.max() - img_tensor.min() + 1e-8)
+        img_np = img_tensor.permute(1, 2, 0).numpy()
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img_np)
+        overlay = ax.imshow(heatmap_resized, cmap='jet', alpha=0.60)
         
+        plt.title(f"GPT-2 Cross-Attention Map for Trait:\n'{trait_text}'", fontsize=11, pad=10)
+        plt.axis('off')
+        fig.colorbar(overlay, ax=ax, fraction=0.046, pad=0.04)
+
+        os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.close(fig)
+
+        print(f"[SUCCESS] Attention map saved to: {save_path}")
 
 
 class Bridge(nn.Module):
