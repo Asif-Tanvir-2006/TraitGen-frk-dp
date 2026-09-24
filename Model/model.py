@@ -415,7 +415,7 @@ class TraitGen(nn.Module):
         if image_features.dim() == 3 and image_features.size(1) == self.args.encoder_op_dim:
             image_features = image_features.permute(0, 2, 1)
 
-        prefix_embeds = self.bridge(image_features) # (1, num_patches, hidden_dim)
+        prefix_embeds = self.bridge(image_features)  # (1, num_patches, hidden_dim)
 
         # 2. Tokenize the trait
         tokenizer = self.decoder.tokenizer
@@ -430,43 +430,56 @@ class TraitGen(nn.Module):
             prompt_ids, prompt_mask, prefix_embeds, target_ids, target_mask
         )
 
-        # 4. Pass through GPT-2 requesting raw attention outputs
-        # 4. Pass through GPT-2 requesting raw attention outputs directly from the trunk
-        # If self.decoder.gpt2 is a GPT2LMHeadModel, we target its base transformer module:
+        # 4. Pass through GPT-2 requesting raw attention outputs directly from the trunk.
+        # Force eager attention for this call so per-head weights are actually returned
+        # (sdpa/flash-attn backends won't materialize them).
         gpt2_base = getattr(self.decoder.gpt2, "transformer", self.decoder.gpt2)
+        prev_attn_impl = getattr(gpt2_base.config, "_attn_implementation", None)
+        if hasattr(gpt2_base.config, "_attn_implementation"):
+            gpt2_base.config._attn_implementation = "eager"
 
-        outputs = gpt2_base(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            output_attentions=True,
-            return_dict=True
-        )
+        try:
+            outputs = gpt2_base(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                output_attentions=True,
+                return_dict=True
+            )
+        finally:
+            if prev_attn_impl is not None:
+                gpt2_base.config._attn_implementation = prev_attn_impl
 
         if outputs.attentions is None:
             raise ValueError(
                 "GPT-2 returned None for attentions. Ensure the model config allows output_attentions=True."
             )
 
-        # outputs.attentions is a tuple of shape: (num_layers, batch_size, num_heads, seq_len, seq_len)
+        # outputs.attentions: tuple of (num_layers,) tensors, each (batch, num_heads, seq_len, seq_len)
         num_patches = prefix_embeds.size(1)
         text_len = target_ids.size(1)
 
-        # Stack layers into tensor: shape (num_layers, batch_size, num_heads, seq_len, seq_len)
-        # Squeeze batch dimension (index 1 since batch_size=1)
-        all_attentions = torch.stack(outputs.attentions).squeeze(1) 
+        # Stack layers -> (num_layers, batch, num_heads, seq_len, seq_len); squeeze batch (batch_size=1)
+        all_attentions = torch.stack(outputs.attentions).squeeze(1)
 
-        # Extract attention weights flowing FROM text tokens TO patch tokens
-        # Average across all layers and attention heads
-        patch_attention = all_attentions[:, :, -text_len:, :num_patches].mean(dim=(0, 1, 2)) # (num_patches,)
-        """
-        end
-        """
+        # Attention flowing FROM text tokens (last text_len query positions, since sequence is
+        # [prefix_patches, target_tokens]) TO patch tokens (first num_patches key positions).
+        # Average across all layers and heads.
+        patch_attention = all_attentions[:, :, -text_len:, :num_patches].mean(dim=(0, 1, 2))  # (num_patches,)
 
-        
-        # 5. Reshape and normalize 2D grid
-        grid_size = int(num_patches ** 0.5)
+        # 5. Reshape to a square grid — validate rather than silently truncating.
+        grid_size = int(round(num_patches ** 0.5))
+        if grid_size * grid_size != num_patches:
+            raise ValueError(
+                f"num_patches ({num_patches}) is not a perfect square; "
+                f"cannot reshape into a square attention grid."
+            )
         attn_grid = patch_attention.view(grid_size, grid_size)
-        attn_grid = (attn_grid - attn_grid.min()) / (attn_grid.max() - attn_grid.min() + 1e-8)
+
+        # Center + standardize to strip GPT-2's attention baseline, then clip negatives
+        # so only above-average patches light up (same trick used in the similarity heatmap).
+        mean_attn = attn_grid.mean()
+        std_attn = attn_grid.std() + 1e-8
+        attn_grid = F.relu((attn_grid - mean_attn) / std_attn)
 
         # 6. Resize to original image dimensions
         B, C, H, W = image.shape
@@ -477,6 +490,9 @@ class TraitGen(nn.Module):
             align_corners=False
         ).squeeze().cpu().numpy()
 
+        if heatmap_resized.max() > 0:
+            heatmap_resized = heatmap_resized / heatmap_resized.max()
+
         # 7. Plot original image + Attention overlay
         img_tensor = image[0].cpu().detach()
         img_tensor = (img_tensor - img_tensor.min()) / (img_tensor.max() - img_tensor.min() + 1e-8)
@@ -485,7 +501,7 @@ class TraitGen(nn.Module):
         fig, ax = plt.subplots(figsize=(8, 8))
         ax.imshow(img_np)
         overlay = ax.imshow(heatmap_resized, cmap='jet', alpha=0.60)
-        
+
         plt.title(f"GPT-2 Cross-Attention Map for Trait:\n'{trait_text}'", fontsize=11, pad=10)
         plt.axis('off')
         fig.colorbar(overlay, ax=ax, fraction=0.046, pad=0.04)
