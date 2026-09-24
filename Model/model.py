@@ -9,14 +9,63 @@ import os
 
 
 import numpy as np
-import cv2
 import matplotlib.pyplot as plt
 
 def visualize_and_save_similarity_heatmap(original_image_tensor, similarity_matrix, prompt_string, save_path):
     """
-    Visualizes Cosine Similarity results by blending a heatmap over the image.
-    ZERO retraining required. Uses OpenCV for image blending.
+    Visualizes Cosine Similarity using ONLY PyTorch and Matplotlib.
+    Bypasses SciPy, Sklearn, and OpenCV completely to prevent NumPy 2.0 crashes.
     """
+    # 1. Select the first batch item and first prompt similarity
+    # similarity_matrix shape: (B, num_prompts, num_patches)
+    similarity_map = similarity_matrix[0, 0] # (num_patches,)
+    
+    # Calculate grid size (e.g., 196 patches -> 14x14 grid)
+    num_patches = similarity_map.size(0)
+    grid_size = int(num_patches ** 0.5)
+    
+    # Reshape to 2D grid: (grid_size, grid_size)
+    similarity_map = similarity_map.view(grid_size, grid_size)
+
+    # Min-max normalize similarity values to 0.0 - 1.0 range
+    min_sim, max_sim = similarity_map.min(), similarity_map.max()
+    norm_sim_map = (similarity_map - min_sim) / (max_sim - min_sim + 1e-8)
+
+    # 2. Rescale heatmap to match input image dimensions using PyTorch
+    B, C, H, W = original_image_tensor.shape
+    scaled_sim_map = norm_sim_map.unsqueeze(0).unsqueeze(0) # (1, 1, grid, grid)
+    
+    # Bilinear interpolation up to full image height & width
+    heatmap_resized = F.interpolate(scaled_sim_map, size=(H, W), mode='bilinear', align_corners=False)
+    heatmap_np = heatmap_resized.squeeze().cpu().numpy()
+
+    # 3. Convert PyTorch image tensor to NumPy format for plotting
+    img_tensor = original_image_tensor[0].cpu().detach()
+    # Normalize tensor channels to 0-1 for plotting if they aren't already
+    img_tensor = (img_tensor - img_tensor.min()) / (img_tensor.max() - img_tensor.min() + 1e-8)
+    img_np = img_tensor.permute(1, 2, 0).numpy() # (C, H, W) -> (H, W, C)
+
+    # 4. Plot original image + heatmap overlay using Matplotlib
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    # Render base image
+    ax.imshow(img_np)
+    
+    # Overlay heat map using 'jet' colormap with 50% transparency (alpha=0.5)
+    heatmap_overlay = ax.imshow(heatmap_np, cmap='jet', alpha=0.5)
+    
+    # Add title and colorbar legend
+    plt.title(f"Patch Similarity: '{prompt_string}'", fontsize=12, pad=10)
+    plt.axis('off')
+    fig.colorbar(heatmap_overlay, ax=ax, fraction=0.046, pad=0.04)
+
+    # Save output image
+    plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    plt.close(fig)
+
+    print(f"[SUCCESS] Heatmap saved without SciPy/OpenCV to: {save_path}")
+"""
+def visualize_and_save_similarity_heatmap(original_image_tensor, similarity_matrix, prompt_string, save_path):
     # 1. Input Check: Ensure we have a matching BATCH_SIZE
     if original_image_tensor.size(0) != similarity_matrix.size(0):
         raise ValueError(f"Batch size mismatch. Got Images={original_image_tensor.size(0)}, Sims={similarity_matrix.size(0)}")
@@ -72,6 +121,7 @@ def visualize_and_save_similarity_heatmap(original_image_tensor, similarity_matr
     print(f"[INFO] Successfully generated similarity visualization.")
     print(f"       Prompt used: '{prompt_string}'")
     print(f"       Output saved to: '{save_path}'")
+"""
 
 class TraitGen(nn.Module):
     """
