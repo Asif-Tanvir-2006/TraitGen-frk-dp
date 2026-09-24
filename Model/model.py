@@ -9,8 +9,68 @@ import os
 
 
 import matplotlib.pyplot as plt
-
 def visualize_and_save_similarity_heatmap(original_image_tensor, similarity_matrix, prompt_string, save_path):
+    """
+    Enhanced Heatmap Generator with Anisotropy Correction & Centering.
+    Isolates true semantic matches without retraining.
+    """
+    # 1. Isolate prompt matrix: (num_patches,)
+    similarity_map = similarity_matrix[0, 0] 
+    
+    num_patches = similarity_map.size(0)
+    grid_size = int(num_patches ** 0.5)
+    
+    # ------------------------------------------------------------------
+    # FIX 1: Subtract the Mean (Center the similarities)
+    # This removes the GPT-2 baseline anisotropy noise (e.g. baseline 0.70)
+    # ------------------------------------------------------------------
+    mean_sim = similarity_map.mean()
+    std_sim = similarity_map.std() + 1e-8
+    
+    # Standardize scores (Z-score normalization over patches)
+    norm_sim_map = (similarity_map - mean_sim) / std_sim
+    
+    # Apply ReLU to discard below-average matching patches (suppress background)
+    norm_sim_map = F.relu(norm_sim_map)
+    
+    # Reshape to 2D grid: (grid_size, grid_size)
+    norm_sim_map = norm_sim_map.view(grid_size, grid_size)
+
+    # ------------------------------------------------------------------
+    # FIX 2: Bilinear Rescaling to Image Dimensions
+    # ------------------------------------------------------------------
+    B, C, H, W = original_image_tensor.shape
+    scaled_sim_map = norm_sim_map.unsqueeze(0).unsqueeze(0) # (1, 1, grid, grid)
+    
+    heatmap_resized = F.interpolate(scaled_sim_map, size=(H, W), mode='bilinear', align_corners=False)
+    heatmap_np = heatmap_resized.squeeze().cpu().numpy()
+
+    # Min-max scale the final heatmap for display (0.0 to 1.0)
+    if heatmap_np.max() > 0:
+        heatmap_np = heatmap_np / heatmap_np.max()
+
+    # ------------------------------------------------------------------
+    # FIX 3: Plot with Matplotlib Overlay
+    # ------------------------------------------------------------------
+    img_tensor = original_image_tensor[0].cpu().detach()
+    img_tensor = (img_tensor - img_tensor.min()) / (img_tensor.max() - img_tensor.min() + 1e-8)
+    img_np = img_tensor.permute(1, 2, 0).numpy()
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.imshow(img_np)
+    
+    # Overlay using jet colormap with thresholded alpha
+    heatmap_overlay = ax.imshow(heatmap_np, cmap='jet', alpha=0.55)
+    
+    plt.title(f"Targeting: '{prompt_string}'", fontsize=12, pad=10)
+    plt.axis('off')
+    fig.colorbar(heatmap_overlay, ax=ax, fraction=0.046, pad=0.04)
+
+    plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    plt.close(fig)
+
+    print(f"[SUCCESS] Centered Heatmap saved: {save_path}")
+def visualize_and_save_similarity_heatmap_old(original_image_tensor, similarity_matrix, prompt_string, save_path):
     """
     Visualizes Cosine Similarity using ONLY PyTorch and Matplotlib.
     Bypasses SciPy, Sklearn, and OpenCV completely to prevent NumPy 2.0 crashes.
