@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class VisionEncoder(nn.Module):
-    def __init_(self, model):
+    def __init__(self, model):
         self.model = model
 
     
