@@ -26,5 +26,5 @@ image_list = [
 with torch.no_grad():
     VE_out = ve.forward(image_list)
     TD_out = td.forward(VE_out)
-
+print(VE_out)
 print(TD_out)
