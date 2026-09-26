@@ -73,7 +73,7 @@ class Model(nn.Module):
             lr=LEARNING_RATE
         )
 
-        for epoch in range(100):
+        for epoch in range(500):
             total_loss = 0.0
 
             for image_paths, captions in loader:
