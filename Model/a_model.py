@@ -13,7 +13,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMAGES_ROOT = "/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images"
 
 BATCH_SIZE = 16
-LEARNING_RATE = 5e-5
+LEARNING_RATE = 1e-4
 GRAD_CLIP_NORM = 1.0
 
 
