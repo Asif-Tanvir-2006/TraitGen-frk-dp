@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from peft import LoraConfig, TaskType, get_peft_model
 
 
@@ -23,12 +25,12 @@ class GPT2Decoder(nn.Module):
     def __init__(self, model):
         super().__init__()
 
-        self.model = model
+        self.tokenizer = GPT2Tokenizer.from_pretrained(model)
+        self.gpt2 = GPT2LMHeadModel.from_pretrained(model)
 
-        self.tokenizer = model.tokenizer
-        self.embedding = model.embedding
-        self.gpt2 = model.gpt2
+        self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        self.embedding = self.gpt2.transformer.wte
         self.image_projection = None
 
         lora_config = LoraConfig(
@@ -127,7 +129,6 @@ class GPT2Decoder(nn.Module):
             max_len = max(max_len, len(sequence))
 
         batch_size = len(sequences)
-
         pad_id = self.tokenizer.pad_token_id
 
         input_ids = torch.full(
