@@ -30,8 +30,8 @@ class GPT2Decoder(nn.Module):
 
         self.args = args
 
-        base_gpt2 = GPT2LMHeadModel.from_pretrained(args.decoder_model)
-        self.tokenizer = GPT2Tokenizer.from_pretrained(args.decoder_model)
+        base_gpt2 = GPT2LMHeadModel.from_pretrained("openai-community/gpt2-small")
+        self.tokenizer = GPT2Tokenizer.from_pretrained("openai-community/gpt2-small")
 
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
