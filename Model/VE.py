@@ -10,7 +10,11 @@ class VisionEncoder(nn.Module):
     
     
     def forward(self, *args, **kwargs):
+        """
+           Expects a list of image paths [image_path1, imagepath2, .....]
+           \n
+           Outputs a BatchSize x Number of Patches x Embedding Dimension 
+        """
+        
         return self.model.forward(*args, **kwargs)
-        #expects B number of image paths, produces B*P*D matrix, 
-        # where P is the number of patches produced per image and 
-        # D is the number of dimensions in each patch     
+      
