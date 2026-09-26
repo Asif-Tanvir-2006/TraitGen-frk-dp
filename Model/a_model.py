@@ -29,7 +29,7 @@ IMAGES_ROOT = (
 # Training
 # ------------------------------------------------------------
 
-MAX_TEXT_LEN = 96
+MAX_TEXT_LEN = 120
 BATCH_SIZE = 16
 LEARNING_RATE = 5e-5
 GRAD_CLIP_NORM = 1.0
@@ -50,15 +50,7 @@ NORMAL_TOKEN_WEIGHT = 1.0
 SPECIES_TOKEN_WEIGHT = 5.0
 EOS_TOKEN_WEIGHT = 5.0
 
-# ------------------------------------------------------------
-# Generation
-# ------------------------------------------------------------
 
-MAX_NEW_TOKENS = 96
-GEN_DO_SAMPLE = False
-GEN_TEMPERATURE = 0.7
-GEN_TOP_P = 0.9
-GEN_REPETITION_PENALTY = 1.2
 
 
 class Model(nn.Module):

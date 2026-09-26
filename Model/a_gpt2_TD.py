@@ -6,6 +6,11 @@ from transformers import (
     GPT2Tokenizer,
 )
 
+MAX_NEW_TOKENS = 96
+GEN_DO_SAMPLE = False
+GEN_TEMPERATURE = 0.7
+GEN_TOP_P = 0.9
+GEN_REPETITION_PENALTY = 1.2
 from peft import (
     LoraConfig,
     TaskType,
