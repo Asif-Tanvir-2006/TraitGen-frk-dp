@@ -13,7 +13,7 @@ class VisionEncoder(nn.Module):
         """
            Expects a list of image paths [image_path1, imagepath2, .....]
            \n
-           Outputs a BatchSize x Number of Patches x Embedding Dimension 
+           Outputs a BatchSize x Number of Patches x Encoder Embedding Dimension 
         """
         
         return self.model.forward(*args, **kwargs)
