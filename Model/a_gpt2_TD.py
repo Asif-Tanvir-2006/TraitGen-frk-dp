@@ -8,7 +8,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 
 STEERING_PROMPT = "Describe this bird species correctly."
 
-MAX_TEXT_LEN = 200
+MAX_TEXT_LEN = 800
 
 NORMAL_TOKEN_WEIGHT = 1.0
 SPECIES_TOKEN_WEIGHT = 5.0
