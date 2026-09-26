@@ -143,18 +143,18 @@ class Model(nn.Module):
         `with torch.no_grad():`) on a test slice to get a validation loss.
         """
 
-        # ---- preserve normal nn.Module.train(mode) behavior ----
-        if dataset is None and path is None:
-            return super().train(mode if isinstance(mode, bool) else True)
+        # # ---- preserve normal nn.Module.train(mode) behavior ----
+        # if dataset is None and path is None:
+        #     return super().train(mode if isinstance(mode, bool) else True)
 
         # ---- otherwise: run one real training pass ----
         super().train(True)   # put everything in training mode...
         self.ve.eval()        # ...except the frozen vision encoder
 
-        if dataset is None:
-            with open(path, "r") as f:
-                dataset = json.load(f)
-                dataset = dataset[start:stop+1]
+        # if dataset is None:
+        with open(path, "r") as f:
+            dataset = json.load(f)
+            dataset = dataset[start:stop+1]
 
         if self.optimizer is None or self._optimizer_lr != lr:
             self.optimizer = torch.optim.AdamW(
