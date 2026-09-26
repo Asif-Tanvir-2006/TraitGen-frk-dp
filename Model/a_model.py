@@ -936,5 +936,6 @@ class Model(nn.Module):
     # ========================================================
 
     @torch.no_grad()
-    def generate(self, *args, **kwargs):
-        self.td.generate(*args, **kwargs)
+    def generate(self, image_list):
+        image_embeds=self.ve(image_list)
+        self.td.generate(image_embeds)
