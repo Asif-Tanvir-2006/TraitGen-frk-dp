@@ -7,4 +7,4 @@ image_list = [
 ]
 model = a_model.Model(vision_encoder=a_bioclip_VE.BioCLIP(), text_decoder=a_gpt2_TD.GPT2Decoder('openai-community/gpt2'))
 model.start_training('./train3.json', 0,0)
-print(model.generate(image_list=image_list))
+print(model.generate(image_list))
