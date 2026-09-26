@@ -9,6 +9,7 @@ import a_TD
 
 class Model(nn.Module):
     def __init__(self, vision_encoder, text_decoder):
+        super().__init__()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # ENCODER
