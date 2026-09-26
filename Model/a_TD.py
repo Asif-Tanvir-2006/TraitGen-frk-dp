@@ -18,8 +18,8 @@ class TextDecoder(nn.Module):
     
     def generate(self, *args, **kwargs):
         """
-            Expects 1 x number of patches/image_tokens x decoder_dim as input
-            gives text as output
+            Expects B x number of patches/image_tokens x decoder_dim as input
+            gives list of generated text as output
         """
         
         return self.model.generate(*args, **kwargs)
