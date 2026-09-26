@@ -72,3 +72,47 @@ class GPT2Decoder(nn.Module):
 
         return outputs
 
+    @torch.no_grad()
+    def generate(self, image_embeddings, max_new_tokens=100):
+
+        # image_embeddings: [B, 49, 768]
+        inputs_embeds = image_embeddings
+
+        generated_ids = []
+
+        for _ in range(max_new_tokens):
+
+            outputs = self.forward(
+                inputs_embeds=inputs_embeds
+            )
+
+            # logits of the final position
+            next_token_logits = outputs.logits[:, -1, :]
+
+            # simplest possible decoding
+            next_token_id = torch.argmax(
+                next_token_logits,
+                dim=-1
+            )
+
+            generated_ids.append(next_token_id)
+
+            # Convert token ID → GPT-2 embedding
+            next_token_embed = self.gpt2.get_input_embeddings()(
+                next_token_id
+            ).unsqueeze(1)
+
+            # Append it to the sequence
+            inputs_embeds = torch.cat(
+                [inputs_embeds, next_token_embed],
+                dim=1
+            )
+
+        generated_ids = torch.stack(generated_ids, dim=1)
+
+        text = self.tokenizer.batch_decode(
+                generated_ids,
+                skip_special_tokens=True
+            )
+
+        return text

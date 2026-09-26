@@ -5,7 +5,7 @@ class TextDecoder(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
-        
+
     def forward(self, *args, **kwargs):
         """
             Expects a matrix of batch x number of patches/tokens x decoder_embed_dimensions as input
@@ -15,5 +15,12 @@ class TextDecoder(nn.Module):
             \n
         """
         return self.model.forward(*args, **kwargs)
+    
+    def generate(self, *args, **kwargs):
+        """
+            Expects 1 x number of patches/image_tokens x decoder_dim as input
+            gives text as output
+        """
         
+        return self.model.generate(*args, **kwargs)
         
