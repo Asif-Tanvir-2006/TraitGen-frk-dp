@@ -38,7 +38,7 @@ class Model(nn.Module):
     def generate(self, image_list):
         with torch.no_grad():
             VE_out = self.ve.forward(image_list)
-            text = self.td.generate()
+            text = self.td.generate(VE_out)
             # TD_out = td.forward(VE_out)
         # print(VE_out)
         return (text)
