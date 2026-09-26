@@ -14,5 +14,6 @@ class TextDecoder(nn.Module):
             token sequence.
             \n
         """
+        return self.model.forward(*args, **kwargs)
         
         
