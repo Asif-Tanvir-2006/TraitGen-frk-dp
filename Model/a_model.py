@@ -12,7 +12,7 @@ GRAD_CLIP_NORM = 1.0
 
 
 class Model(nn.Module):
-    def __init__(self, vision_encoder, text_decoder, images_root=""):
+    def __init__(self, vision_encoder, text_decoder, images_root="/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/"):
         super().__init__()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
