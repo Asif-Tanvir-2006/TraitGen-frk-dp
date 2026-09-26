@@ -13,14 +13,13 @@ class Model(nn.Module):
         
         # ENCODER
         # bioClip = a_bioclip_VE.BioCLIP()
-        vision_encoder = vision_encoder.to(device)
-        self.ve = a_VE.VisionEncoder(vision_encoder).to(device)
+        ve = vision_encoder.to(device)
+        self.ve = a_VE.VisionEncoder(ve).to(device)
 
         # DECODER
         # text_decoder = a_gpt2_TD.GPT2Decoder().to(device)
-        text_decoder = text_decoder.to(device)
-        
-        self.td = a_TD.TextDecoder(text_decoder).to(device)
+        td = text_decoder.to(device)
+        self.td = a_TD.TextDecoder(td).to(device)
 
 
 
