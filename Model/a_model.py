@@ -10,7 +10,7 @@ import a_TD
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-IMAGES_ROOT = "/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011"
+IMAGES_ROOT = "/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images"
 
 BATCH_SIZE = 16
 LEARNING_RATE = 5e-5
