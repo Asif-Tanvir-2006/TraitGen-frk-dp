@@ -127,7 +127,7 @@ class Model(nn.Module):
 
     ##Train
 
-    def start_training(self, epochs=100, dataset=None, path=None, batch_size=16, lr=5e-5, mode=True):
+    def start_training(self, epochs=100, path=None, batch_size=16, lr=5e-5, mode=True, start=0, stop=0):
         """
         model.train(dataset_slice)               -> train one pass over dataset_slice
         model.train(path="train.json", ...)       -> loads the json, trains one pass over it
@@ -154,6 +154,7 @@ class Model(nn.Module):
         if dataset is None:
             with open(path, "r") as f:
                 dataset = json.load(f)
+                dataset = dataset[start:stop+1]
 
         if self.optimizer is None or self._optimizer_lr != lr:
             self.optimizer = torch.optim.AdamW(
