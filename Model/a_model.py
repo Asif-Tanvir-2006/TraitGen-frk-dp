@@ -793,7 +793,7 @@ class Model(nn.Module):
 
     def start_training(
         self,
-        epochs=100,
+        epochs=1,
         path=None,
         batch_size=BATCH_SIZE,
         lr=LEARNING_RATE,
@@ -816,17 +816,11 @@ class Model(nn.Module):
 
             dataset = json.load(f)
 
-        if stop > start:
 
             dataset = dataset[
                 start:stop + 1
             ]
 
-        else:
-
-            dataset = dataset[
-                start:
-            ]
 
         print(
             f"Training samples: "
