@@ -15,7 +15,7 @@ IMAGES_ROOT = "/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images"
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-4
 GRAD_CLIP_NORM = 1.0
-
+EPOCHS = 500
 
 class CUBDataset(Dataset):
     def __init__(self, data):
@@ -73,7 +73,7 @@ class Model(nn.Module):
             lr=LEARNING_RATE
         )
 
-        for epoch in range(500):
+        for epoch in range(EPOCHS):
             total_loss = 0.0
 
             for image_paths, captions in loader:
@@ -95,6 +95,6 @@ class Model(nn.Module):
             avg_loss = total_loss / len(loader)
 
             print(
-                f"Epoch {epoch + 1}/100 | "
+                f"Epoch {epoch + 1}/{EPOCHS} | "
                 f"loss={avg_loss:.4f}"
             )
