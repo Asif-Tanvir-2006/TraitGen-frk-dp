@@ -15,7 +15,7 @@ IMAGES_ROOT = "/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images"
 BATCH_SIZE = 8
 LEARNING_RATE = 1e-4
 GRAD_CLIP_NORM = 1.0
-EPOCHS = 10
+EPOCHS = 5
 
 class CUBDataset(Dataset):
     def __init__(self, data):
@@ -49,7 +49,7 @@ class Model(nn.Module):
     def start_training(self, json_path, start, stop):
         with open(json_path, "r") as f:
             data = json.load(f)
-        data = data[start: stop+1]
+        # data = data[start: stop+1]
         dataset = CUBDataset(data)
 
         loader = DataLoader(
@@ -98,3 +98,4 @@ class Model(nn.Module):
                     f"Epoch {epoch + 1}/{EPOCHS} | "
                     f"loss={avg_loss:.4f}"
                 )
+        torch.save(self.state_dict(), "/kaggle/working/model.pt")
