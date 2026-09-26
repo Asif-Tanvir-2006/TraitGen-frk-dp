@@ -1,266 +1,518 @@
 import os
 import json
+
 import torch
 import torch.nn as nn
+
 import a_VE
 import a_TD
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
+)
+
+# Maximum number of TEXT tokens.
+# Image tokens and steering-prompt tokens are additional.
+MAX_TEXT_LEN = 96
+
 STEERING_PROMPT = "Describe this bird species correctly."
+
+# Species sentence + EOS are more important than ordinary
+# attribute tokens.
 SPECIES_WEIGHT = 5.0
-MAX_TEXT_LEN = 96  # max caption length in tokens; adjust if your gts run longer
+EOS_WEIGHT = 5.0
+
 GRAD_CLIP_NORM = 1.0
 
 
 class Model(nn.Module):
-    def __init__(self, vision_encoder, text_decoder, images_root="/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/"):
+
+    def __init__(
+        self,
+        vision_encoder,
+        text_decoder,
+        images_root="/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/"
+    ):
+
         super().__init__()
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # ====================================================
         # ENCODER
-        # bioClip = a_bioclip_VE.BioCLIP()
-        ve = vision_encoder.to(device)
-        self.ve = a_VE.VisionEncoder(ve).to(device)
+        # ====================================================
 
+        self.ve = a_VE.VisionEncoder(
+            vision_encoder
+        ).to(DEVICE)
+
+
+        # ====================================================
         # DECODER
-        # text_decoder = a_gpt2_TD.GPT2Decoder().to(device)
-        td = text_decoder.to(device)
-        self.td = a_TD.TextDecoder(td).to(device)
+        # ====================================================
 
-        # Reuse the tokenizer already attached to the underlying GPT2Decoder
-        # rather than loading a separate one.
+        self.td = a_TD.TextDecoder(
+            text_decoder.to(DEVICE)
+        ).to(DEVICE)
+
+
+        # ====================================================
+        # TOKENIZER
+        # ====================================================
+
         self.tokenizer = self.td.model.tokenizer
+
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Bridges BioCLIP's embedding dim to GPT-2's. Created lazily on the
-        # first forward call, once we actually see both dimensions.
+
+        # ====================================================
+        # IMAGE -> GPT2 PROJECTION
+        # ====================================================
+
+        # Created on first forward pass because we don't
+        # necessarily know the encoder dimension beforehand.
+
         self.image_projection = None
 
-        # Prefix to join with the relative "imagePath" values stored in
-        # train.json / test.json. Override by passing images_root= here,
-        # or by setting model.images_root = "..." later.
+
+        # ====================================================
+        # PATH
+        # ====================================================
+
         self.images_root = images_root
 
-        # Created lazily inside train(), and kept across calls so momentum
-        # (Adam's running averages) carries over between epochs instead of
-        # resetting every time train() is called.
+
+        # ====================================================
+        # OPTIMIZER
+        # ====================================================
+
         self.optimizer = None
         self._optimizer_lr = None
 
+
+    # ========================================================
+    # GPT-2 EMBEDDING LAYER
+    # ========================================================
+
     def _get_text_embedding_layer(self):
-        # GPT2Decoder precomputes this as a plain attribute (not a method),
-        # since it's a bare nn.Module, not a HF PreTrainedModel.
+
         return self.td.model.embedding
 
-    def _ensure_projection(self, encoder_dim, decoder_dim):
-        if self.image_projection is None and encoder_dim != decoder_dim:
-            self.image_projection = nn.Linear(encoder_dim, decoder_dim).to(DEVICE)
+
+    # ========================================================
+    # CREATE IMAGE PROJECTION
+    # ========================================================
+
+    def _ensure_projection(
+        self,
+        encoder_dim,
+        decoder_dim
+    ):
+
+        if self.image_projection is None:
+
+            self.image_projection = nn.Linear(
+                encoder_dim,
+                decoder_dim
+            ).to(DEVICE)
+
+            print(
+                f"Created image projection: "
+                f"{encoder_dim} -> {decoder_dim}"
+            )
+
         return self.image_projection
 
-    # def forward(self, image_paths, captions):
-    #     """
-    #     Loss computation for one batch. Encodes images, embeds the target
-    #     caption tokens, concatenates them as [image tokens] + [caption
-    #     tokens], and returns the language-model loss computed on the
-    #     caption tokens only (image positions are masked out of the loss
-    #     with label == -100).
-    #     """
 
-    #     # 1. Encode images -> (B, N_img, encoder_dim). BioCLIP.forward is
-    #     #    hard-wrapped in @torch.no_grad(), so these come in detached --
-    #     #    the encoder itself never gets gradients, only the projection
-    #     #    layer below does (that's expected: it stays frozen).
-    #     image_embeds = self.ve(image_paths)
+    # ========================================================
+    # TOKENIZE CAPTIONS
+    # ========================================================
 
-    #     # 2. Tokenize captions. Force right-padding for this call only --
-    #     #    the tokenizer defaults to left-padding (used by generate()),
-    #     #    but training needs padding *after* the real tokens so
-    #     #    [image][caption][pad] stays causally correct and lines up
-    #     #    with the -100 label masking below.
-    #     original_padding_side = self.tokenizer.padding_side
-    #     self.tokenizer.padding_side = "right"
-    #     tokenized = self.tokenizer(
-    #         captions,
-    #         padding=True,
-    #         truncation=True,
-    #         max_length=MAX_TEXT_LEN,
-    #         return_tensors="pt",
-    #     ).to(DEVICE)
-    #     self.tokenizer.padding_side = original_padding_side
+    def _prepare_captions(self, captions):
 
-    #     input_ids = tokenized["input_ids"]
-    #     attn_mask_text = tokenized["attention_mask"]
-
-    #     # 3. Embed caption tokens with the decoder's own embedding table
-    #     text_embeds = self._get_text_embedding_layer()(input_ids)
-
-    #     # 4. Project image embeddings to the decoder's dimension if needed
-    #     encoder_dim = image_embeds.shape[-1]
-    #     decoder_dim = text_embeds.shape[-1]
-    #     projection = self._ensure_projection(encoder_dim, decoder_dim)
-    #     if projection is not None:
-    #         image_embeds = projection(image_embeds)
-
-    #     # 5. Concatenate: [image tokens] + [caption tokens]
-    #     combined_embeds = torch.cat([image_embeds, text_embeds], dim=1)
-
-    #     batch_size, num_img_tokens, _ = image_embeds.shape
-    #     img_attn_mask = torch.ones(
-    #         batch_size, num_img_tokens, device=DEVICE, dtype=attn_mask_text.dtype
-    #     )
-    #     combined_attn_mask = torch.cat([img_attn_mask, attn_mask_text], dim=1)
-
-    #     # 6. Labels: ignore image positions and padding, predict caption tokens
-    #     ignore = torch.full(
-    #         (batch_size, num_img_tokens), -100, device=DEVICE, dtype=input_ids.dtype
-    #     )
-    #     text_labels = input_ids.clone()
-    #     text_labels[attn_mask_text == 0] = -100
-    #     labels = torch.cat([ignore, text_labels], dim=1)
-
-    #     outputs = self.td.forward(
-    #         inputs_embeds=combined_embeds,
-    #         attention_mask=combined_attn_mask,
-    #         labels=labels,
-    #     )
-    #     return outputs.loss
-    def forward(self, image_paths, captions):
         """
-        Sequence:
+        Produces:
 
-            [IMAGE TOKENS] [STEERING PROMPT] [CAPTION TOKENS]
+            input_ids
+            attention_mask
+            species_mask
+
+        Every target becomes:
+
+            [attributes]
+            [This species is likely ...]
+            [EOS]
+
+        Species and EOS are guaranteed to fit.
+
+        species_mask:
+
+            0 -> ordinary attribute token
+            1 -> species token / EOS
+        """
+
+        eos_id = self.tokenizer.eos_token_id
+
+        all_ids = []
+        all_masks = []
+        all_species_masks = []
+
+        for caption in captions:
+
+            caption = caption.strip()
+
+            marker = "This species is likely"
+
+            species_pos = caption.find(marker)
+
+
+            # ------------------------------------------------
+            # Split attributes and species sentence
+            # ------------------------------------------------
+
+            if species_pos == -1:
+
+                # This should not happen with your generated
+                # JSON, but handle it safely.
+
+                attribute_text = caption
+                species_text = ""
+
+            else:
+
+                attribute_text = caption[:species_pos].strip()
+                species_text = caption[species_pos:].strip()
+
+
+            # ------------------------------------------------
+            # Tokenize separately
+            # ------------------------------------------------
+
+            attribute_ids = self.tokenizer(
+                attribute_text,
+                add_special_tokens=False
+            )["input_ids"]
+
+            species_ids = self.tokenizer(
+                species_text,
+                add_special_tokens=False
+            )["input_ids"]
+
+
+            # ------------------------------------------------
+            # Reserve space for:
+            #
+            # species + EOS
+            # ------------------------------------------------
+
+            reserved = len(species_ids) + 1
+
+            max_attribute_tokens = max(
+                MAX_TEXT_LEN - reserved,
+                0
+            )
+
+
+            # ------------------------------------------------
+            # Truncate ONLY attributes
+            #
+            # Never truncate species.
+            # ------------------------------------------------
+
+            attribute_ids = attribute_ids[
+                :max_attribute_tokens
+            ]
+
+
+            # ------------------------------------------------
+            # Final sequence
+            # ------------------------------------------------
+
+            ids = (
+                attribute_ids
+                + species_ids
+                + [eos_id]
+            )
+
+
+            # Safety check
+
+            ids = ids[:MAX_TEXT_LEN]
+
+
+            # ------------------------------------------------
+            # Attention mask
+            # ------------------------------------------------
+
+            attention = [
+                1
+            ] * len(ids)
+
+
+            # ------------------------------------------------
+            # Species mask
+            #
+            # attributes -> 0
+            # species    -> 1
+            # EOS        -> 1
+            # ------------------------------------------------
+
+            species_mask = (
+                [0] * len(attribute_ids)
+                + [1] * len(species_ids)
+                + [1]
+            )
+
+            species_mask = species_mask[
+                :MAX_TEXT_LEN
+            ]
+
+
+            all_ids.append(ids)
+            all_masks.append(attention)
+            all_species_masks.append(species_mask)
+
+
+        # ====================================================
+        # PAD BATCH
+        # ====================================================
+
+        batch_size = len(captions)
+
+        max_len = max(
+            len(x)
+            for x in all_ids
+        )
+
+        pad_id = self.tokenizer.pad_token_id
+
+
+        input_ids = torch.full(
+            (
+                batch_size,
+                max_len
+            ),
+            pad_id,
+            dtype=torch.long,
+            device=DEVICE
+        )
+
+
+        attention_mask = torch.zeros(
+            (
+                batch_size,
+                max_len
+            ),
+            dtype=torch.long,
+            device=DEVICE
+        )
+
+
+        species_mask = torch.zeros(
+            (
+                batch_size,
+                max_len
+            ),
+            dtype=torch.float,
+            device=DEVICE
+        )
+
+
+        for i in range(batch_size):
+
+            n = len(all_ids[i])
+
+            input_ids[i, :n] = torch.tensor(
+                all_ids[i],
+                dtype=torch.long,
+                device=DEVICE
+            )
+
+            attention_mask[i, :n] = 1
+
+            species_mask[i, :n] = torch.tensor(
+                all_species_masks[i],
+                dtype=torch.float,
+                device=DEVICE
+            )
+
+
+        return (
+            input_ids,
+            attention_mask,
+            species_mask
+        )
+
+
+    # ========================================================
+    # FORWARD
+    # ========================================================
+
+    def forward(
+        self,
+        image_paths,
+        captions
+    ):
+
+        """
+        Training sequence:
+
+            [IMAGE TOKENS]
+            [STEERING PROMPT]
+            [CAPTION TOKENS]
+            [EOS]
+
 
         Loss:
 
             IMAGE TOKENS  -> ignored
             PROMPT TOKENS -> ignored
-            CAPTION       -> normal loss
-            SPECIES       -> weighted loss
+            ATTRIBUTES    -> weight 1
+            SPECIES       -> weight 5
+            EOS           -> weight 5
         """
 
-        # ========================================================
+
+        # ====================================================
         # 1. IMAGE ENCODER
-        # ========================================================
+        # ====================================================
 
-        image_embeds = self.ve(image_paths)
+        image_embeds = self.ve(
+            image_paths
+        )
 
-        # image_embeds:
+        # Expected:
+
         # [B, N_IMAGE_TOKENS, vision_dim]
 
 
-        # ========================================================
+        # ====================================================
         # 2. TOKENIZE CAPTIONS
-        # ========================================================
+        # ====================================================
 
-        original_padding_side = self.tokenizer.padding_side
-        self.tokenizer.padding_side = "right"
-
-        tokenized = self.tokenizer(
-            captions,
-            padding=True,
-            truncation=True,
-            max_length=MAX_TEXT_LEN,
-            return_tensors="pt",
-        ).to(DEVICE)
-
-        self.tokenizer.padding_side = original_padding_side
-
-        input_ids = tokenized["input_ids"]
-        attn_mask_text = tokenized["attention_mask"]
-
-
-        # ========================================================
-        # 3. TOKENIZE STEERING PROMPT
-        # ========================================================
-
-        prompt_tokenized = self.tokenizer(
-            STEERING_PROMPT,
-            add_special_tokens=False,
-            return_tensors="pt",
+        (
+            input_ids,
+            attn_mask_text,
+            species_mask
+        ) = self._prepare_captions(
+            captions
         )
 
-        prompt_ids = prompt_tokenized["input_ids"].to(DEVICE)
 
-        # [1, P]
+        # ====================================================
+        # 3. CAPTION EMBEDDINGS
+        # ====================================================
 
-        prompt_embeds_single = self._get_text_embedding_layer()(
+        text_embedding_layer = (
+            self._get_text_embedding_layer()
+        )
+
+        text_embeds = text_embedding_layer(
+            input_ids
+        )
+
+        # [B, T, 768]
+
+
+        # ====================================================
+        # 4. STEERING PROMPT
+        # ====================================================
+
+        prompt_tokens = self.tokenizer(
+            STEERING_PROMPT,
+            add_special_tokens=False,
+            return_tensors="pt"
+        )
+
+        prompt_ids = prompt_tokens[
+            "input_ids"
+        ].to(DEVICE)
+
+
+        prompt_embeds = text_embedding_layer(
             prompt_ids
         )
 
-        # [1, P, hidden_dim]
+        # [1, P, 768]
 
-
-        # ========================================================
-        # 4. EXPAND PROMPT FOR BATCH
-        # ========================================================
 
         batch_size = image_embeds.size(0)
 
-        prompt_embeds = prompt_embeds_single.expand(
+        prompt_embeds = prompt_embeds.expand(
             batch_size,
             -1,
             -1
         )
 
-        num_prompt_tokens = prompt_embeds.size(1)
+        num_prompt_tokens = (
+            prompt_embeds.size(1)
+        )
 
 
-        # ========================================================
-        # 5. PROJECT IMAGE EMBEDDINGS
-        # ========================================================
+        # ====================================================
+        # 5. IMAGE PROJECTION
+        # ====================================================
 
         encoder_dim = image_embeds.shape[-1]
-        decoder_dim = prompt_embeds.shape[-1]
+        decoder_dim = text_embeds.shape[-1]
 
         projection = self._ensure_projection(
             encoder_dim,
             decoder_dim
         )
 
-        if projection is not None:
-            image_embeds = projection(image_embeds)
+        image_embeds = projection(
+            image_embeds
+        )
+
+        num_image_tokens = (
+            image_embeds.size(1)
+        )
 
 
-        # ========================================================
+        # ====================================================
         # 6. CONCATENATE
-        # ========================================================
-
-        # [IMAGE] [PROMPT] [CAPTION]
+        #
+        # [IMAGE] [PROMPT] [TEXT]
+        # ====================================================
 
         combined_embeds = torch.cat(
             [
                 image_embeds,
                 prompt_embeds,
-                self._get_text_embedding_layer()(input_ids),
+                text_embeds
             ],
             dim=1
         )
 
 
-        num_img_tokens = image_embeds.size(1)
-
-        # ========================================================
+        # ====================================================
         # 7. ATTENTION MASK
-        # ========================================================
+        # ====================================================
 
-        img_mask = torch.ones(
+        image_mask = torch.ones(
             batch_size,
-            num_img_tokens,
-            device=DEVICE,
-            dtype=attn_mask_text.dtype
+            num_image_tokens,
+            dtype=attn_mask_text.dtype,
+            device=DEVICE
         )
+
 
         prompt_mask = torch.ones(
             batch_size,
             num_prompt_tokens,
-            device=DEVICE,
-            dtype=attn_mask_text.dtype
+            dtype=attn_mask_text.dtype,
+            device=DEVICE
         )
 
-        combined_attn_mask = torch.cat(
+
+        combined_attention_mask = torch.cat(
             [
-                img_mask,
+                image_mask,
                 prompt_mask,
                 attn_mask_text
             ],
@@ -268,34 +520,28 @@ class Model(nn.Module):
         )
 
 
-        # ========================================================
+        # ====================================================
         # 8. LABELS
-        # ========================================================
+        # ====================================================
 
-        # Image tokens:
+        # Image positions:
         #
-        # [a b]
-        #
-        # don't predict them.
-        #
+        # NO LOSS
 
         image_labels = torch.full(
             (
                 batch_size,
-                num_img_tokens
+                num_image_tokens
             ),
             -100,
-            device=DEVICE,
-            dtype=input_ids.dtype
+            dtype=input_ids.dtype,
+            device=DEVICE
         )
 
 
-        # Prompt tokens:
+        # Prompt positions:
         #
-        # [c]
-        #
-        # also don't predict them.
-        #
+        # NO LOSS
 
         prompt_labels = torch.full(
             (
@@ -303,18 +549,21 @@ class Model(nn.Module):
                 num_prompt_tokens
             ),
             -100,
-            device=DEVICE,
-            dtype=input_ids.dtype
+            dtype=input_ids.dtype,
+            device=DEVICE
         )
 
 
-        # Caption labels
+        # Caption positions
 
-        caption_labels = input_ids.clone()
+        text_labels = input_ids.clone()
 
-        # Ignore padding
 
-        caption_labels[
+        # Padding:
+        #
+        # NO LOSS
+
+        text_labels[
             attn_mask_text == 0
         ] = -100
 
@@ -325,237 +574,453 @@ class Model(nn.Module):
             [
                 image_labels,
                 prompt_labels,
-                caption_labels
+                text_labels
             ],
             dim=1
         )
 
 
-        # ========================================================
-        # 9. RUN GPT-2
-        # ========================================================
+        # ====================================================
+        # 9. GPT-2
+        # ====================================================
 
         outputs = self.td.forward(
             inputs_embeds=combined_embeds,
-            attention_mask=combined_attn_mask,
-            labels=None,
+            attention_mask=combined_attention_mask,
+            labels=None
         )
 
         logits = outputs.logits
 
-        # logits:
-        #
-        # [B, sequence_length, vocab_size]
 
-
-        # ========================================================
+        # ====================================================
         # 10. CAUSAL SHIFT
-        # ========================================================
+        # ====================================================
 
-        # GPT-2 predicts:
-        #
-        # position 0 -> token 1
-        # position 1 -> token 2
-        # position 2 -> token 3
-        # ...
-        #
-        # So we manually perform the shift.
+        shift_logits = logits[
+            :, :-1, :
+        ].contiguous()
 
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = labels[:, 1:].contiguous()
+        shift_labels = labels[
+            :, 1:
+        ].contiguous()
 
 
-        # ========================================================
+        # ====================================================
         # 11. TOKEN-LEVEL CROSS ENTROPY
-        # ========================================================
+        # ====================================================
 
-        loss_fct = nn.CrossEntropyLoss(
+        loss_function = nn.CrossEntropyLoss(
             reduction="none"
         )
 
-        token_loss = loss_fct(
-            shift_logits.view(-1, shift_logits.size(-1)),
+
+        token_loss = loss_function(
+            shift_logits.view(
+                -1,
+                shift_logits.size(-1)
+            ),
             shift_labels.view(-1)
         )
+
 
         token_loss = token_loss.view(
             shift_labels.shape
         )
 
 
-        # ========================================================
-        # 12. SPECIES WEIGHTING
-        # ========================================================
+        # ====================================================
+        # 12. WEIGHT SPECIES + EOS
+        # ====================================================
+
+        # species_mask corresponds to labels.
+        #
+        # Shift it exactly like the labels.
+
+        shift_species_mask = species_mask[
+            :, 1:
+        ]
+
 
         weights = torch.ones_like(
-            token_loss,
-            dtype=token_loss.dtype
+            token_loss
         )
 
-        for b in range(batch_size):
 
-            caption = captions[b]
-
-            # Find the species sentence.
-            #
-            # Example:
-            #
-            # "This species is likely Black footed Albatross."
-
-            marker = "This species is likely"
-
-            species_start = caption.find(marker)
-
-            if species_start == -1:
-                continue
-
-            # Everything from the species sentence onward
-            species_text = caption[species_start:]
-
-            # Number of caption tokens BEFORE species sentence
-            before_species = caption[:species_start]
-
-            before_ids = self.tokenizer(
-                before_species,
-                add_special_tokens=False,
-            )["input_ids"]
-
-            species_ids = self.tokenizer(
-                species_text,
-                add_special_tokens=False,
-            )["input_ids"]
-
-            species_start_token = len(before_ids)
-
-            species_end_token = (
-                species_start_token
-                + len(species_ids)
-            )
-
-            # Caption starts after:
-            #
-            # image + prompt
-            #
-            caption_start = (
-                num_img_tokens
-                + num_prompt_tokens
-            )
-
-            # Convert caption-relative positions
-            # to positions in shift_labels.
-
-            global_start = (
-                caption_start
-                + species_start_token
-            )
-
-            global_end = (
-                caption_start
-                + species_end_token
-            )
-
-            # Because shift_labels = labels[:, 1:]
-            #
-            # label position n appears at shifted position n-1.
-
-            shifted_start = max(
-                global_start - 1,
-                0
-            )
-
-            shifted_end = min(
-                global_end - 1,
-                weights.size(1)
-            )
-
-            weights[
-                b,
-                shifted_start:shifted_end
-            ] = SPECIES_WEIGHT
+        weights[
+            shift_species_mask == 1
+        ] = SPECIES_WEIGHT
 
 
-        # ========================================================
-        # 13. IGNORE MASK
-        # ========================================================
+        # ====================================================
+        # 13. IGNORE INVALID POSITIONS
+        # ====================================================
 
-        valid = shift_labels != -100
+        valid = (
+            shift_labels != -100
+        )
+
+
+        # ====================================================
+        # 14. WEIGHTED LOSS
+        # ====================================================
 
         weighted_loss = (
             token_loss * weights
         )
 
-        loss = weighted_loss[valid].sum() / weights[valid].sum()
+
+        loss = (
+            weighted_loss[valid].sum()
+            /
+            weights[valid].sum()
+        )
+
 
         return loss
-    ##Train
 
-    def start_training(self, epochs=100, path=None, batch_size=16, lr=5e-5, mode=True, start=0, stop=0):
-        """
-        model.train(dataset_slice)               -> train one pass over dataset_slice
-        model.train(path="train.json", ...)       -> loads the json, trains one pass over it
-        model.train()  /  model.train(False)      -> normal nn.Module mode toggle (unchanged)
 
-        `dataset_slice` is a list of {"imagePath": ..., "gt": ...} dicts --
-        e.g. json.load(open("train.json"))[start:end]. Returns the average
-        loss over the pass.
+    # ========================================================
+    # TRAINING
+    # ========================================================
 
-        This does exactly one pass over whatever you give it and nothing
-        else -- no internal epoch loop, no evaluation, no checkpointing.
-        Call it once per epoch yourself, and call it again (wrapped in
-        `with torch.no_grad():`) on a test slice to get a validation loss.
-        """
+    def start_training(
+        self,
+        epochs=100,
+        path=None,
+        batch_size=16,
+        lr=5e-5,
+        mode=True,
+        start=0,
+        stop=0
+    ):
 
-        # # ---- preserve normal nn.Module.train(mode) behavior ----
-        # if dataset is None and path is None:
-        #     return super().train(mode if isinstance(mode, bool) else True)
+        # ----------------------------------------------------
+        # Training mode
+        # ----------------------------------------------------
 
-        # ---- otherwise: run one real training pass ----
-        super().train(True)   # put everything in training mode...
-        self.ve.eval()        # ...except the frozen vision encoder
+        super().train(True)
 
-        # if dataset is None:
+        # Vision encoder frozen
+
+        self.ve.eval()
+
+
+        # ----------------------------------------------------
+        # Load dataset
+        # ----------------------------------------------------
+
         with open(path, "r") as f:
-            dataset = json.load(f)
-            dataset = dataset[start:stop+1]
 
-        if self.optimizer is None or self._optimizer_lr != lr:
-            self.optimizer = torch.optim.AdamW(
-                filter(lambda p: p.requires_grad, self.parameters()),
-                lr=lr,
-            )
-            self._optimizer_lr = lr
-        for j in range(epochs):
-            
+            dataset = json.load(f)
+
+
+        if stop > start:
+
+            dataset = dataset[
+                start:stop + 1
+            ]
+
+        else:
+
+            dataset = dataset[
+                start:
+            ]
+
+
+        print(
+            f"Training samples: {len(dataset)}"
+        )
+
+
+        # ----------------------------------------------------
+        # Epoch loop
+        # ----------------------------------------------------
+
+        for epoch in range(epochs):
+
             total_loss = 0.0
             total_batches = 0
 
-            for i in range(0, len(dataset), batch_size):
-                batch = dataset[i:i + batch_size]
+
+            for i in range(
+                0,
+                len(dataset),
+                batch_size
+            ):
+
+                batch = dataset[
+                    i:i + batch_size
+                ]
+
+
+                # --------------------------------------------
+                # Image paths
+                # --------------------------------------------
 
                 image_paths = [
-                    os.path.join(self.images_root, item["imagePath"])
+                    os.path.join(
+                        self.images_root,
+                        item["imagePath"]
+                    )
                     for item in batch
                 ]
-                captions = [item["gt"].strip() for item in batch]
 
-                loss = self(image_paths, captions)
 
-                self.optimizer.zero_grad()
+                # --------------------------------------------
+                # Captions
+                # --------------------------------------------
+
+                captions = [
+                    item["gt"].strip()
+                    for item in batch
+                ]
+
+
+                # --------------------------------------------
+                # Forward
+                #
+                # IMPORTANT:
+                #
+                # This creates image_projection on the first
+                # batch.
+                # --------------------------------------------
+
+                loss = self(
+                    image_paths,
+                    captions
+                )
+
+
+                # --------------------------------------------
+                # Create optimizer AFTER projection exists
+                #
+                # This fixes the subtle bug in your original
+                # implementation.
+                # --------------------------------------------
+
+                if (
+                    self.optimizer is None
+                    or
+                    self._optimizer_lr != lr
+                ):
+
+                    self.optimizer = torch.optim.AdamW(
+                        filter(
+                            lambda p: p.requires_grad,
+                            self.parameters()
+                        ),
+                        lr=lr
+                    )
+
+                    self._optimizer_lr = lr
+
+                    print(
+                        "Optimizer initialized."
+                    )
+
+
+                # --------------------------------------------
+                # Backprop
+                # --------------------------------------------
+
+                self.optimizer.zero_grad(
+                    set_to_none=True
+                )
+
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.parameters(), GRAD_CLIP_NORM)
+
+
+                # --------------------------------------------
+                # Gradient clipping
+                # --------------------------------------------
+
+                torch.nn.utils.clip_grad_norm_(
+                    self.parameters(),
+                    GRAD_CLIP_NORM
+                )
+
+
+                # --------------------------------------------
+                # Update
+                # --------------------------------------------
+
                 self.optimizer.step()
 
-                total_loss += loss.item()
-                total_batches += 1
-            if(j%50==0):
-                print("epochs", j)
-                print(total_loss / max(total_batches, 1))
 
-    ##Generate/Inference
-    def generate(self, image_list):
-        with torch.no_grad():
-            VE_out = self.ve.forward(image_list)
-            text = self.td.generate(VE_out)
-            # TD_out = td.forward(VE_out)
-            # print(VE_out)
-        return (text)
+                # --------------------------------------------
+                # Statistics
+                # --------------------------------------------
+
+                total_loss += loss.item()
+
+                total_batches += 1
+
+
+            avg_loss = (
+                total_loss
+                /
+                max(total_batches, 1)
+            )
+
+
+            print(
+                f"Epoch "
+                f"{epoch + 1}/{epochs} "
+                f"| loss = {avg_loss:.4f}"
+            )
+
+
+    # ========================================================
+    # GENERATION
+    # ========================================================
+
+    @torch.no_grad()
+    def generate(
+        self,
+        image_list,
+        max_new_tokens=96,
+        do_sample=False,
+        temperature=0.7,
+        top_p=0.9,
+        repetition_penalty=1.2
+    ):
+
+        self.eval()
+
+
+        # ====================================================
+        # 1. IMAGE ENCODER
+        # ====================================================
+
+        image_embeds = self.ve(
+            image_list
+        )
+
+
+        # ====================================================
+        # 2. GPT2 DIMENSION
+        # ====================================================
+
+        text_embedding_layer = (
+            self._get_text_embedding_layer()
+        )
+
+
+        # We need the decoder dimension.
+
+        decoder_dim = (
+            text_embedding_layer.weight.shape[1]
+        )
+
+
+        # ====================================================
+        # 3. IMAGE PROJECTION
+        # ====================================================
+
+        image_embeds = self._ensure_projection(
+            image_embeds.shape[-1],
+            decoder_dim
+        )(
+            image_embeds
+        )
+
+
+        # ====================================================
+        # 4. STEERING PROMPT
+        # ====================================================
+
+        prompt = self.tokenizer(
+            STEERING_PROMPT,
+            add_special_tokens=False,
+            return_tensors="pt"
+        )
+
+
+        prompt_ids = prompt[
+            "input_ids"
+        ].to(DEVICE)
+
+
+        prompt_embeds = text_embedding_layer(
+            prompt_ids
+        )
+
+
+        # ====================================================
+        # 5. INITIAL SEQUENCE
+        #
+        # [IMAGE] [PROMPT]
+        # ====================================================
+
+        inputs_embeds = torch.cat(
+            [
+                image_embeds,
+                prompt_embeds
+            ],
+            dim=1
+        )
+
+
+        batch_size = image_embeds.size(0)
+
+        attention_mask = torch.ones(
+            batch_size,
+            inputs_embeds.size(1),
+            dtype=torch.long,
+            device=DEVICE
+        )
+
+
+        # ====================================================
+        # 6. GENERATE
+        # ====================================================
+
+        # Your GPT2Decoder wraps the HuggingFace GPT2 model
+        # as self.td.model.gpt2.
+
+        generated = self.td.model.gpt2.generate(
+
+            inputs_embeds=inputs_embeds,
+
+            attention_mask=attention_mask,
+
+            max_new_tokens=max_new_tokens,
+
+            do_sample=do_sample,
+
+            temperature=(
+                temperature
+                if do_sample
+                else None
+            ),
+
+            top_p=(
+                top_p
+                if do_sample
+                else None
+            ),
+
+            repetition_penalty=repetition_penalty,
+
+            eos_token_id=(
+                self.tokenizer.eos_token_id
+            ),
+
+            pad_token_id=(
+                self.tokenizer.eos_token_id
+            )
+        )
+
+
+        # ====================================================
+        # 7. DECODE
+        # ====================================================
+
+        text = self.tokenizer.batch_decode(
+            generated,
+            skip_special_tokens=True
+        )
+
+
+        return text

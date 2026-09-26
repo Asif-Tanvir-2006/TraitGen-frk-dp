@@ -73,7 +73,7 @@ class GPT2Decoder(nn.Module):
         return outputs
 
     @torch.no_grad()
-    def generate(self, image_embeddings, max_new_tokens=700):
+    def generate(self, image_embeddings, max_new_tokens=300):
 
         # image_embeddings: [B, 49, 768]
         inputs_embeds = image_embeddings
