@@ -25,10 +25,10 @@ class GPT2Decoder(nn.Module):
         - Producing language model outputs.
     """
 
-    def __init__(self, args):
+    def __init__(self):
         super().__init__()
 
-        self.args = args
+        # self.args = args
 
         base_gpt2 = GPT2LMHeadModel.from_pretrained("openai-community/gpt2-small")
         self.tokenizer = GPT2Tokenizer.from_pretrained("openai-community/gpt2-small")
