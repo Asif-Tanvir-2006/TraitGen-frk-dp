@@ -6,11 +6,6 @@ from transformers import (
     GPT2Tokenizer,
 )
 
-MAX_NEW_TOKENS = 96
-GEN_DO_SAMPLE = False
-GEN_TEMPERATURE = 0.7
-GEN_TOP_P = 0.9
-GEN_REPETITION_PENALTY = 1.2
 from peft import (
     LoraConfig,
     TaskType,
@@ -78,184 +73,47 @@ class GPT2Decoder(nn.Module):
         return outputs
 
     @torch.no_grad()
-    def generate(
-            self,
-            image_list,
-            max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=GEN_DO_SAMPLE,
-            temperature=GEN_TEMPERATURE,
-            top_p=GEN_TOP_P,
-            repetition_penalty=GEN_REPETITION_PENALTY
-        ):
     
-            self.eval()
-    
-            # ====================================================
-            # 1. IMAGE
-            # ====================================================
-    
-            image_embeds = self.ve(
-                image_list
+    def generate(self, image_embeddings, max_new_tokens=300):
+
+        # image_embeddings: [B, 49, 768]
+        inputs_embeds = image_embeddings
+
+        generated_ids = []
+
+        for _ in range(max_new_tokens):
+
+            outputs = self.forward(
+                inputs_embeds=inputs_embeds
             )
-    
-            batch_size = image_embeds.size(0)
-            encoder_dim = image_embeds.size(-1)
-    
-            # ====================================================
-            # 2. GPT2 DIMENSION
-            # ====================================================
-    
-            embedding_layer = (
-                self._get_text_embedding_layer()
+
+            # logits of the final position
+            next_token_logits = outputs.logits[:, -1, :]
+
+            # simplest possible decoding
+            next_token_id = torch.argmax(
+                next_token_logits,
+                dim=-1
             )
-    
-            decoder_dim = (
-                embedding_layer.weight.size(1)
-            )
-    
-            # ====================================================
-            # 3. IMAGE PROJECTION
-            # ====================================================
-    
-            projection = self._ensure_projection(
-                encoder_dim,
-                decoder_dim
-            )
-    
-            image_embeds = projection(
-                image_embeds
-            )
-    
-            # ====================================================
-            # 4. STEERING PROMPT
-            # ====================================================
-    
-            prompt_tokens = self.tokenizer(
-                STEERING_PROMPT,
-                add_special_tokens=False,
-                return_tensors="pt"
-            )
-    
-            prompt_ids = prompt_tokens[
-                "input_ids"
-            ].to(DEVICE)
-    
-            prompt_embeds = embedding_layer(
-                prompt_ids
-            )
-    
-            prompt_embeds = prompt_embeds.expand(
-                batch_size,
-                -1,
-                -1
-            )
-    
-            # ====================================================
-            # 5. INITIAL SEQUENCE
-            #
-            # [IMAGE] [PROMPT]
-            # ====================================================
-    
+
+            generated_ids.append(next_token_id)
+
+            # Convert token ID → GPT-2 embedding
+            next_token_embed = self.gpt2.get_input_embeddings()(
+                next_token_id
+            ).unsqueeze(1)
+
+            # Append it to the sequence
             inputs_embeds = torch.cat(
-                [
-                    image_embeds,
-                    prompt_embeds
-                ],
+                [inputs_embeds, next_token_embed],
                 dim=1
             )
-    
-            attention_mask = torch.ones(
-                (
-                    batch_size,
-                    inputs_embeds.size(1)
-                ),
-                dtype=torch.long,
-                device=DEVICE
-            )
-    
-            # ====================================================
-            # 6. GENERATE
-            # ====================================================
-    
-            # The exact underlying GPT-2 model is used here.
-    
-            generate_kwargs = {
-                "inputs_embeds": inputs_embeds,
-                "attention_mask": attention_mask,
-                "max_new_tokens": max_new_tokens,
-                "do_sample": do_sample,
-                "repetition_penalty": repetition_penalty,
-                "eos_token_id": self.tokenizer.eos_token_id,
-                "pad_token_id": self.tokenizer.eos_token_id,
-            }
-    
-            # Only provide sampling parameters when sampling
-            # is enabled.
-    
-            if do_sample:
-    
-                generate_kwargs[
-                    "temperature"
-                ] = temperature
-    
-                generate_kwargs[
-                    "top_p"
-                ] = top_p
-    
-            generated = self.td.model.gpt2.generate(
-                **generate_kwargs
-            )
-    
-            # ====================================================
-            # 7. DECODE
-            # ====================================================
-    
-            text = self.tokenizer.batch_decode(
-                generated,
+
+        generated_ids = torch.stack(generated_ids, dim=1)
+
+        text = self.tokenizer.batch_decode(
+                generated_ids,
                 skip_special_tokens=True
             )
-    
-            return text
-    # def generate(self, image_embeddings, max_new_tokens=300):
 
-    #     # image_embeddings: [B, 49, 768]
-    #     inputs_embeds = image_embeddings
-
-    #     generated_ids = []
-
-    #     for _ in range(max_new_tokens):
-
-    #         outputs = self.forward(
-    #             inputs_embeds=inputs_embeds
-    #         )
-
-    #         # logits of the final position
-    #         next_token_logits = outputs.logits[:, -1, :]
-
-    #         # simplest possible decoding
-    #         next_token_id = torch.argmax(
-    #             next_token_logits,
-    #             dim=-1
-    #         )
-
-    #         generated_ids.append(next_token_id)
-
-    #         # Convert token ID → GPT-2 embedding
-    #         next_token_embed = self.gpt2.get_input_embeddings()(
-    #             next_token_id
-    #         ).unsqueeze(1)
-
-    #         # Append it to the sequence
-    #         inputs_embeds = torch.cat(
-    #             [inputs_embeds, next_token_embed],
-    #             dim=1
-    #         )
-
-    #     generated_ids = torch.stack(generated_ids, dim=1)
-
-    #     text = self.tokenizer.batch_decode(
-    #             generated_ids,
-    #             skip_special_tokens=True
-    #         )
-
-    #     return text
+        return text
