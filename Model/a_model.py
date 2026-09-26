@@ -937,4 +937,4 @@ class Model(nn.Module):
 
     @torch.no_grad()
     def generate(self, *args, **kwargs):
-        self.model.generate()
+        self.td.generate()
