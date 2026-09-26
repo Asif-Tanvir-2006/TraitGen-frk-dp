@@ -46,7 +46,7 @@ class Model(nn.Module):
         image_features = self.ve(image_paths)
         return self.td.generate(image_features)
 
-    def start_training(self, json_path, start, stop):
+    def start_training(self, json_path):
         with open(json_path, "r") as f:
             data = json.load(f)
         # data = data[start: stop+1]
