@@ -525,7 +525,7 @@ class Model(nn.Module):
             )
             self._optimizer_lr = lr
         for j in range(epochs):
-            print("epochs", j)
+            
             total_loss = 0.0
             total_batches = 0
 
@@ -547,8 +547,9 @@ class Model(nn.Module):
 
                 total_loss += loss.item()
                 total_batches += 1
-
-            print(total_loss / max(total_batches, 1))
+            if(j%50==0):
+                print("epochs", j)
+                print(total_loss / max(total_batches, 1))
 
     ##Generate/Inference
     def generate(self, image_list):
