@@ -72,7 +72,7 @@ class Model(nn.Module):
             self.parameters(),
             lr=LEARNING_RATE
         )
-
+        prev_loss = 0.0985
         for epoch in range(EPOCHS):
             total_loss = 0.0
 
@@ -98,4 +98,6 @@ class Model(nn.Module):
                     f"Epoch {epoch + 1}/{EPOCHS} | "
                     f"loss={avg_loss:.4f}"
                 )
-        torch.save(self.state_dict(), "/kaggle/working/model2.pt")
+            if(avg_loss < prev_loss):
+                torch.save(self.state_dict(), "/kaggle/working/model2.pt")
+                prev_loss = avg_loss
