@@ -46,10 +46,10 @@ class Model(nn.Module):
         image_features = self.ve(image_paths)
         return self.td.generate(image_features)
 
-    def start_training(self, json_path):
+
+    def start_training(self, json_path, accelerator=None):
         with open(json_path, "r") as f:
             data = json.load(f)
-        # data = data[start: stop+1]
         dataset = CUBDataset(data)
 
         loader = DataLoader(
@@ -65,13 +65,15 @@ class Model(nn.Module):
         self.ve.eval()
         self.td.train()
 
-        first_batch = next(iter(loader))
-        self(first_batch[0], first_batch[1])
+        optimizer = torch.optim.AdamW(self.parameters(), lr=LEARNING_RATE)
 
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=LEARNING_RATE
-        )
+        call_target = self
+        if accelerator is not None:
+            call_target, optimizer, loader = accelerator.prepare(self, optimizer, loader)
+
+        first_batch = next(iter(loader))
+        call_target(first_batch[0], first_batch[1])
+
         prev_loss = 0.0985
         for epoch in range(EPOCHS):
             total_loss = 0.0
@@ -79,25 +81,81 @@ class Model(nn.Module):
             for image_paths, captions in loader:
                 optimizer.zero_grad()
 
-                loss = self(image_paths, captions)
+                loss = call_target(image_paths, captions)
 
-                loss.backward()
+                if accelerator is not None:
+                    accelerator.backward(loss)
+                else:
+                    loss.backward()
 
-                torch.nn.utils.clip_grad_norm_(
-                    self.parameters(),
-                    GRAD_CLIP_NORM
-                )
-
+                torch.nn.utils.clip_grad_norm_(self.parameters(), GRAD_CLIP_NORM)
                 optimizer.step()
-
                 total_loss += loss.item()
 
             avg_loss = total_loss / len(loader)
-            if(epoch%1==0):
-                print(
-                    f"Epoch {epoch + 1}/{EPOCHS} | "
-                    f"loss={avg_loss:.4f}"
-                )
-            if(avg_loss < prev_loss):
-                torch.save(self.state_dict(), "/kaggle/working/model2.pt")
+
+            if accelerator is None or accelerator.is_main_process:
+                print(f"Epoch {epoch + 1}/{EPOCHS} | loss={avg_loss:.4f}")
+
+            if avg_loss < prev_loss:
+                if accelerator is None:
+                    torch.save(self.state_dict(), "/kaggle/working/model2.pt")
+                elif accelerator.is_main_process:
+                    unwrapped = accelerator.unwrap_model(call_target)
+                    torch.save(unwrapped.state_dict(), "/kaggle/working/model2.pt")
                 prev_loss = avg_loss
+        # def start_training(self, json_path):
+        #     with open(json_path, "r") as f:
+        #         data = json.load(f)
+        #     # data = data[start: stop+1]
+        #     dataset = CUBDataset(data)
+
+        #     loader = DataLoader(
+        #         dataset,
+        #         batch_size=BATCH_SIZE,
+        #         shuffle=True,
+        #         collate_fn=lambda x: (
+        #             [i[0] for i in x],
+        #             [i[1] for i in x]
+        #         )
+        #     )
+
+        #     self.ve.eval()
+        #     self.td.train()
+
+        #     first_batch = next(iter(loader))
+        #     self(first_batch[0], first_batch[1])
+
+        #     optimizer = torch.optim.AdamW(
+        #         self.parameters(),
+        #         lr=LEARNING_RATE
+        #     )
+        #     prev_loss = 0.0985
+        #     for epoch in range(EPOCHS):
+        #         total_loss = 0.0
+
+        #         for image_paths, captions in loader:
+        #             optimizer.zero_grad()
+
+        #             loss = self(image_paths, captions)
+
+        #             loss.backward()
+
+        #             torch.nn.utils.clip_grad_norm_(
+        #                 self.parameters(),
+        #                 GRAD_CLIP_NORM
+        #             )
+
+        #             optimizer.step()
+
+        #             total_loss += loss.item()
+
+        #         avg_loss = total_loss / len(loader)
+        #         if(epoch%1==0):
+        #             print(
+        #                 f"Epoch {epoch + 1}/{EPOCHS} | "
+        #                 f"loss={avg_loss:.4f}"
+        #             )
+        #         if(avg_loss < prev_loss):
+        #             torch.save(self.state_dict(), "/kaggle/working/model2.pt")
+        #             prev_loss = avg_loss
