@@ -34,15 +34,15 @@ def run_inference():
         vision_encoder=a_bioclip_VE.BioCLIP(),
         text_decoder=a_gpt2_TD.GPT2Decoder('openai-community/gpt2')
     )
-    model.load_state_dict(torch.load("/kaggle/working/model2.pt", map_location='cpu'))
+    model.load_state_dict(torch.load("/kaggle/input/notebooks/skasiftanvir/traitgen2/model2.pt", map_location='cpu'))
     model = model.cuda()
 
     print(model.generate(image_list))
 
 
 if __name__ == "__main__":
-    accelerator = train_fn()
-    accelerator.wait_for_everyone()   # barrier: make sure both ranks finish before anyone proceeds
+    # accelerator = train_fn()
+    # accelerator.wait_for_everyone()   # barrier: make sure both ranks finish before anyone proceeds
 
-    if accelerator.is_main_process:
-        run_inference()
+    # if accelerator.is_main_process:
+    run_inference()
