@@ -27,7 +27,7 @@ def train_fn():
 
 def run_inference():
     image_list = [
-        '/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/002.Laysan_Albatross/Laysan_Albatross_0085_564.jpg'
+        '/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/002.Laysan_Albatross/Laysan_Albatross_0085_564.jpg',
         '/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/143.Caspian_Tern/Caspian_Tern_0097_145923.jpg'
     ]
 
