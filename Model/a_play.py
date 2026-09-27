@@ -33,8 +33,6 @@
 # print(model.module.generate(image_list))
 
 
-
-import json
 import torch
 from accelerate import Accelerator, notebook_launcher
 
@@ -54,26 +52,27 @@ def train_fn():
     state_dict = torch.load("/kaggle/working/model.pt", map_location='cpu')
     model.load_state_dict(state_dict)
 
-    # BioCLIP forward runs under @torch.no_grad(), so it never produces
-    # gradients — freeze it explicitly or DDP will error expecting them
     for p in model.ve.parameters():
         p.requires_grad_(False)
 
     model.start_training('./train3.json', accelerator=accelerator)
 
 
-notebook_launcher(train_fn, num_processes=2)
+def run_inference():
+    image_list = [
+        '/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/002.Laysan_Albatross/Laysan_Albatross_0085_564.jpg'
+    ]
 
-# --- inference: single GPU, back in the main process, after training ---
-image_list = [
-    '/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/002.Laysan_Albatross/Laysan_Albatross_0085_564.jpg'
-]
+    model = a_model.Model(
+        vision_encoder=a_bioclip_VE.BioCLIP(),
+        text_decoder=a_gpt2_TD.GPT2Decoder('openai-community/gpt2')
+    )
+    model.load_state_dict(torch.load("/kaggle/working/model2.pt", map_location='cpu'))
+    model = model.cuda()
 
-model = a_model.Model(
-    vision_encoder=a_bioclip_VE.BioCLIP(),
-    text_decoder=a_gpt2_TD.GPT2Decoder('openai-community/gpt2')
-)
-model.load_state_dict(torch.load("/kaggle/working/model2.pt", map_location='cpu'))
-model = model.cuda()
+    print(model.generate(image_list))
 
-print(model.generate(image_list))
+
+if __name__ == "__main__":
+    notebook_launcher(train_fn, num_processes=2)
+    run_inference()
