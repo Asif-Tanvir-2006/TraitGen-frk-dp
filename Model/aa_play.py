@@ -14,7 +14,7 @@ def train_fn():
         text_decoder=a_gpt2_TD.GPT2Decoder('openai-community/gpt2')
     )
 
-    state_dict = torch.load("/kaggle/working/model.pt", map_location='cpu')
+    state_dict = torch.load("/kaggle/input/notebooks/skasiftanvir/traitgen2/model.pt", map_location='cpu')
     model.load_state_dict(state_dict)
 
     for p in model.ve.parameters():
