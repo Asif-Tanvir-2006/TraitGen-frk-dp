@@ -31,7 +31,7 @@ class GPT2Decoder(nn.Module):
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.embedding = self.gpt2.transformer.wte
-        self.image_projection = None
+        self.image_projection = nn.Linear(768, 768)
 
         lora_config = LoraConfig(
             r=16,
