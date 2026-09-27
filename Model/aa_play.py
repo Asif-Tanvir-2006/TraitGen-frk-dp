@@ -44,5 +44,5 @@ if __name__ == "__main__":
     # accelerator = train_fn()
     # accelerator.wait_for_everyone()   # barrier: make sure both ranks finish before anyone proceeds
 
-    if accelerator.is_main_process:
-        run_inference()
+    # if accelerator.is_main_process:
+    run_inference()
