@@ -74,7 +74,7 @@ class Model(nn.Module):
         first_batch = next(iter(loader))
         call_target(first_batch[0], first_batch[1])
 
-        prev_loss = 0.0985
+        prev_loss = 100000000
         for epoch in range(EPOCHS):
             total_loss = 0.0
 
