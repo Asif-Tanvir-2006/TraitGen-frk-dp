@@ -28,7 +28,9 @@ def train_fn():
 def run_inference():
     image_list = [
         # '/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/002.Laysan_Albatross/Laysan_Albatross_0085_564.jpg',
-        '/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/200.Common_Yellowthroat/Common_Yellowthroat_0055_190967.jpg'
+        # '/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images/200.Common_Yellowthroat/Common_Yellowthroat_0055_190967.jpg'
+        '/kaggle/working/TraitGen-frk-dp/black_spot.jpeg',
+        '/kaggle/working/TraitGen-frk-dp/red_spot.jpeg'
     ]
 
     model = a_model.Model(
@@ -42,8 +44,8 @@ def run_inference():
 
 
 if __name__ == "__main__":
-    accelerator = train_fn()
-    accelerator.wait_for_everyone()   # barrier: make sure both ranks finish before anyone proceeds
+    # accelerator = train_fn()
+    # accelerator.wait_for_everyone()   # barrier: make sure both ranks finish before anyone proceeds
 
     # if accelerator.is_main_process:
-    # run_inference()
+    run_inference()
