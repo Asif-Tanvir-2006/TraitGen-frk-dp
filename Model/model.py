@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-import a_VE
-import a_TD
+import Model.VE as VE
+import Model.TD as TD
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -15,7 +15,7 @@ IMAGES_ROOT = "/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images"
 BATCH_SIZE = 8
 LEARNING_RATE = 1e-4
 GRAD_CLIP_NORM = 1.0
-EPOCHS = 20
+EPOCHS = 5
 
 class CUBDataset(Dataset):
     def __init__(self, data):
@@ -34,8 +34,8 @@ class Model(nn.Module):
     def __init__(self, vision_encoder, text_decoder):
         super().__init__()
 
-        self.ve = a_VE.VisionEncoder(vision_encoder).to(DEVICE)
-        self.td = a_TD.TextDecoder(text_decoder).to(DEVICE)
+        self.ve = VE.VisionEncoder(vision_encoder).to(DEVICE)
+        self.td = TD.TextDecoder(text_decoder).to(DEVICE)
 
     def forward(self, image_paths, captions):
         image_features = self.ve(image_paths)
