@@ -1,100 +1,161 @@
+import os
+import json
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 
-from Model.VisionEncoder import VisionEncoder
-from Model.TextDecoder import GPT2Decoder
+import a_VE
+import a_TD
 
-class TraitGen(nn.Module):
-    """
-    TraitGen: Image Captioning Model
 
-    Components:
-        - VisionEncoder: extracts image representations.
-        - Bridge: projects visual features into GPT-2 embedding space.
-        - GPT2Decoder: generates captions conditioned on image features.
-    """
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def __init__(self, args, vision_encoder=None):
+IMAGES_ROOT = "/kaggle/input/datasets/wenewone/cub2002011/CUB_200_2011/images"
+
+BATCH_SIZE = 8
+LEARNING_RATE = 1e-4
+GRAD_CLIP_NORM = 1.0
+EPOCHS = 20
+
+class CUBDataset(Dataset):
+    def __init__(self, data):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        image_path = os.path.join(IMAGES_ROOT, item["imagePath"])
+        return image_path, item["gt"]
+
+
+class Model(nn.Module):
+    def __init__(self, vision_encoder, text_decoder):
         super().__init__()
 
-        self.args = args
-        self.vision_encoder = VisionEncoder(args) if vision_encoder is None else vision_encoder
-        self.decoder = GPT2Decoder(args)
-        self.bridge = Bridge(vision_dim=args.encoder_op_dim, hidden_dim=self.decoder.hidden_dim)
+        self.ve = a_VE.VisionEncoder(vision_encoder).to(DEVICE)
+        self.td = a_TD.TextDecoder(text_decoder).to(DEVICE)
 
-    # ============================================================
-    # Prepare inputs for GPT-2 training/validation
-    # ============================================================
-    def input2decoder(self, prompt_ids, prompt_mask, prefix_embeds, target_ids, target_mask):
-
-        prompt_embeds = self.decoder.gpt2.get_input_embeddings()(prompt_ids)
-        target_embeds = self.decoder.gpt2.get_input_embeddings()(target_ids)
-
-        inputs_embeds = torch.cat([prompt_embeds, prefix_embeds, target_embeds], dim=1)
-
-        B, PREFIX_LEN = prompt_ids.size(0), prefix_embeds.size(1)
-        device = prompt_ids.device
-
-        prompt_labels = torch.full(prompt_ids.shape, -100, device=device, dtype=torch.long)
-        prefix_labels = torch.full((B, PREFIX_LEN), -100, device=device, dtype=torch.long)
-        labels = torch.cat([prompt_labels, prefix_labels, target_ids], dim=1)
-
-        prefix_mask = torch.ones((B, PREFIX_LEN), device=device, dtype=torch.long)
-        full_mask = torch.cat([prompt_mask, prefix_mask, target_mask], dim=1)
-
-        return inputs_embeds, full_mask, labels
-
-
-    # ============================================================
-    # Training / validation forward pass
-    # ============================================================
-    def forward(self, image, prompt_ids, prompt_mask, target_ids, target_mask):
-
-        image_features = self.vision_encoder(image).permute(0, 2, 1)
-        prefix_embeds = self.bridge(image_features)
-
-        inputs_embeds, attention_mask, labels = self.input2decoder(
-            prompt_ids, prompt_mask, prefix_embeds, target_ids, target_mask)
-
-        outputs = self.decoder(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels)
-        loss = outputs.loss
-
-        return loss
-
-    # ============================================================
-    # Caption generation
-    # ============================================================
+    def forward(self, image_paths, captions):
+        image_features = self.ve(image_paths)
+        return self.td(image_features, captions)
 
     @torch.no_grad()
-    def generate_caption(self, image, prompt_ids, prompt_mask):
-
-        image_features = self.vision_encoder(image).permute(0, 2, 1)
-        prefix_embeds = self.bridge(image_features)
-
-        prompt_embeds = self.decoder.gpt2.get_input_embeddings()(prompt_ids)
-        inputs_embeds = torch.cat([prompt_embeds, prefix_embeds], dim=1)
-
-        B, PREFIX_LEN = prompt_ids.size(0), prefix_embeds.size(1)
-        prefix_mask = torch.ones((B, PREFIX_LEN), device=prompt_ids.device, dtype=torch.long)
-        attention_mask = torch.cat([prompt_mask, prefix_mask], dim=1)
-
-        generated = self.decoder.gpt2.generate(
-            inputs_embeds=inputs_embeds, attention_mask=attention_mask,
-            max_new_tokens=100, do_sample=True, temperature=0.7, top_p=0.92,
-            repetition_penalty=1.2, eos_token_id=self.decoder.tokenizer.eos_token_id,
-            pad_token_id=self.decoder.tokenizer.eos_token_id,)
-
-        generated_text = self.decoder.tokenizer.batch_decode(generated, skip_special_tokens=True)
-
-        return generated_text
+    def generate(self, image_paths):
+        image_features = self.ve(image_paths)
+        return self.td.generate(image_features)
 
 
-class Bridge(nn.Module):
+    def start_training(self, json_path, accelerator=None):
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        dataset = CUBDataset(data)
 
-    def __init__(self, vision_dim: int, hidden_dim: int):
-        super().__init__()
+        loader = DataLoader(
+            dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+            collate_fn=lambda x: (
+                [i[0] for i in x],
+                [i[1] for i in x]
+            )
+        )
 
-        self.projection = nn.Linear(vision_dim, hidden_dim)
+        self.ve.eval()
+        self.td.train()
 
-    def forward(self, image_features: torch.Tensor) -> torch.Tensor:
-        return self.projection(image_features)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=LEARNING_RATE)
+
+        call_target = self
+        if accelerator is not None:
+            call_target, optimizer, loader = accelerator.prepare(self, optimizer, loader)
+
+        first_batch = next(iter(loader))
+        call_target(first_batch[0], first_batch[1])
+
+        prev_loss = 100000000
+        for epoch in range(EPOCHS):
+            total_loss = 0.0
+
+            for image_paths, captions in loader:
+                optimizer.zero_grad()
+
+                loss = call_target(image_paths, captions)
+
+                if accelerator is not None:
+                    accelerator.backward(loss)
+                else:
+                    loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(self.parameters(), GRAD_CLIP_NORM)
+                optimizer.step()
+                total_loss += loss.item()
+
+            avg_loss = total_loss / len(loader)
+
+            if accelerator is None or accelerator.is_main_process:
+                print(f"Epoch {epoch + 1}/{EPOCHS} | loss={avg_loss:.4f}")
+
+            if avg_loss < prev_loss:
+                if accelerator is None:
+                    torch.save(self.state_dict(), "/kaggle/working/model2.pt")
+                elif accelerator.is_main_process:
+                    unwrapped = accelerator.unwrap_model(call_target)
+                    torch.save(unwrapped.state_dict(), "/kaggle/working/model2.pt")
+                prev_loss = avg_loss
+        # def start_training(self, json_path):
+        #     with open(json_path, "r") as f:
+        #         data = json.load(f)
+        #     # data = data[start: stop+1]
+        #     dataset = CUBDataset(data)
+
+        #     loader = DataLoader(
+        #         dataset,
+        #         batch_size=BATCH_SIZE,
+        #         shuffle=True,
+        #         collate_fn=lambda x: (
+        #             [i[0] for i in x],
+        #             [i[1] for i in x]
+        #         )
+        #     )
+
+        #     self.ve.eval()
+        #     self.td.train()
+
+        #     first_batch = next(iter(loader))
+        #     self(first_batch[0], first_batch[1])
+
+        #     optimizer = torch.optim.AdamW(
+        #         self.parameters(),
+        #         lr=LEARNING_RATE
+        #     )
+        #     prev_loss = 0.0985
+        #     for epoch in range(EPOCHS):
+        #         total_loss = 0.0
+
+        #         for image_paths, captions in loader:
+        #             optimizer.zero_grad()
+
+        #             loss = self(image_paths, captions)
+
+        #             loss.backward()
+
+        #             torch.nn.utils.clip_grad_norm_(
+        #                 self.parameters(),
+        #                 GRAD_CLIP_NORM
+        #             )
+
+        #             optimizer.step()
+
+        #             total_loss += loss.item()
+
+        #         avg_loss = total_loss / len(loader)
+        #         if(epoch%1==0):
+        #             print(
+        #                 f"Epoch {epoch + 1}/{EPOCHS} | "
+        #                 f"loss={avg_loss:.4f}"
+        #             )
+        #         if(avg_loss < prev_loss):
+        #             torch.save(self.state_dict(), "/kaggle/working/model2.pt")
+        #             prev_loss = avg_loss
