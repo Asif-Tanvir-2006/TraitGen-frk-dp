@@ -1,7 +1,7 @@
 import torch
 from accelerate import Accelerator
 
-import Model.model as model
+import Model.model as combined_model
 import Model.vision_encoder.bioclip_VE as bioclip_VE
 import Model.text_decoder.gpt2_TD as gpt2_TD
 
@@ -9,7 +9,7 @@ import Model.text_decoder.gpt2_TD as gpt2_TD
 def train_fn():
     accelerator = Accelerator()
 
-    model = model.Model(
+    model = combined_model.Model(
         vision_encoder=bioclip_VE.BioCLIP(),
         text_decoder=gpt2_TD.GPT2Decoder('openai-community/gpt2')
     )
