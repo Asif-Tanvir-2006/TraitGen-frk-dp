@@ -20,7 +20,7 @@ def train_fn():
     for p in model.ve.parameters():
         p.requires_grad_(False)
 
-    model.start_training('./train2.json', accelerator=accelerator)
+    model.start_training('./train.json', accelerator=accelerator)
 
     return accelerator
 
