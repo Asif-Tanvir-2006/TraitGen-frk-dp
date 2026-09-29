@@ -33,11 +33,11 @@ def run_inference():
         # '/kaggle/working/TraitGen-frk-dp/red_spot.jpeg'
     ]
 
-    model = model.Model(
+    model = combined_model.Model(
         vision_encoder=bioclip_VE.BioCLIP(),
         text_decoder=gpt2_TD.GPT2Decoder('openai-community/gpt2')
     )
-    model.load_state_dict(torch.load("/kaggle/input/notebooks/skasiftanvir/traitgen2/model2.pt", map_location='cpu'))
+    model.load_state_dict(torch.load("/kaggle/working/model2.pt", map_location='cpu'))
     model = model.cuda()
 
     print(model.generate(image_list))
