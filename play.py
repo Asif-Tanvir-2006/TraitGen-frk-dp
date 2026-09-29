@@ -1,26 +1,26 @@
 import torch
 from accelerate import Accelerator
 
-import a_model
-import a_bioclip_VE
-import a_gpt2_TD
+import Model.model as model
+import Model.vision_encoder.bioclip_VE as bioclip_VE
+import Model.text_decoder.gpt2_TD as gpt2_TD
 
 
 def train_fn():
     accelerator = Accelerator()
 
-    model = a_model.Model(
-        vision_encoder=a_bioclip_VE.BioCLIP(),
-        text_decoder=a_gpt2_TD.GPT2Decoder('openai-community/gpt2')
+    model = model.Model(
+        vision_encoder=bioclip_VE.BioCLIP(),
+        text_decoder=gpt2_TD.GPT2Decoder('openai-community/gpt2')
     )
 
-    state_dict = torch.load("/kaggle/working/model2.pt", map_location='cpu')
-    model.load_state_dict(state_dict)
+    # state_dict = torch.load("/kaggle/working/model2.pt", map_location='cpu')
+    # model.load_state_dict(state_dict)
 
     for p in model.ve.parameters():
         p.requires_grad_(False)
 
-    model.start_training('./train3.json', accelerator=accelerator)
+    model.start_training('./train2.json', accelerator=accelerator)
 
     return accelerator
 
@@ -33,9 +33,9 @@ def run_inference():
         '/kaggle/working/TraitGen-frk-dp/red_spot.jpeg'
     ]
 
-    model = a_model.Model(
-        vision_encoder=a_bioclip_VE.BioCLIP(),
-        text_decoder=a_gpt2_TD.GPT2Decoder('openai-community/gpt2')
+    model = model.Model(
+        vision_encoder=bioclip_VE.BioCLIP(),
+        text_decoder=gpt2_TD.GPT2Decoder('openai-community/gpt2')
     )
     model.load_state_dict(torch.load("/kaggle/input/notebooks/skasiftanvir/traitgen2/model2.pt", map_location='cpu'))
     model = model.cuda()
@@ -44,8 +44,8 @@ def run_inference():
 
 
 if __name__ == "__main__":
-    # accelerator = train_fn()
-    # accelerator.wait_for_everyone()   # barrier: make sure both ranks finish before anyone proceeds
+    accelerator = train_fn()
+    accelerator.wait_for_everyone()   # barrier: make sure both ranks finish before anyone proceeds
 
     # if accelerator.is_main_process:
-    run_inference()
+    # run_inference()
